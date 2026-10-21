@@ -1,0 +1,109 @@
+# ADR 0001: Reuse project 01's entity resolution as a pinned Python package
+
+- **Status:** Accepted
+- **Date:** 2026-10-20
+- **Context repo:** [github.com/traycn/entity-resolution](https://github.com/traycn/entity-resolution) (project 01)
+
+## Context
+
+02 must stitch identities across CRM contacts, web form fills and anonymous devices. Project 01 already has measured matching rules: 0.9998 mean pairwise precision over six seeds, three of them held out, plus a safety rule that never merges conflicting identifiers. The portfolio claim is stronger if 02 uses **the same engine** rather than a lookalike.
+
+Constraints:
+
+- 02 is a TypeScript monorepo.
+- 01 is Python 3.12 (`polars`, `rapidfuzz`, `phonenumbers`), with a CLI (`resolver run --sources DIR --out DIR`) and importable functions (`score_pair`, `cluster_matches`).
+
+## Options
+
+### A. Install 01 as a Python package pinned to a git tag, call it from a pipeline step — **chosen**
+
+`services/stitch/` is a `uv` project that depends on 01 at tag `v1.0.0`. One stitching run:
+
+1. Exports person records from `staging` into 01's CSV format.
+2. Runs `resolver`.
+3. Loads clusters and per-pair evidence back into `core.identity_link` and `core.link_evidence`.
+
+### B. Run 01 as a small HTTP service — rejected
+
+- Adds an image build, health checks, an HTTP contract, timeouts and retries, for work that is a batch job over ~10k records.
+- CI would have to build and start the service before every stitching test.
+- Reproducibility depends on image tags as well as code tags.
+- It would read as over-engineering to a reviewer, and it proves nothing that A doesn't.
+
+### C. Port the scoring rules to TypeScript — rejected
+
+- Creates a second copy of every normalizer and rule, so 01 stops being the single source of truth and fixes must land twice.
+- Proving the port matches 01 needs a cross-check that runs 01 anyway, so the Python toolchain is still needed in CI.
+- Weakens the portfolio claim from "the measured engine" to "a reimplementation of it".
+
+## Decision
+
+**Option A.** Requirements:
+
+- **Prerequisite in the 01 repo (separate session, before M3):**
+  - Ship `config.toml` inside the package, with `RESOLVER_CONFIG` as an override. Today `DEFAULT_CONFIG_PATH` is `parents[2] / "config.toml"`, which a wheel install can't find.
+  - Rename the distribution from the generic `resolver` (e.g. to `entity-resolution`); the import name stays `resolver`.
+  - Tag `v1.0.0`; 01 has no tags today.
+- `services/stitch/uv.lock` pins that tag. Upgrading 01 is a deliberate change to the pin, followed by a re-run of `docs/acceptance.md`.
+- 02 does **not** tune 01's thresholds or weights. Any change goes into 01, is re-measured there, and is tagged.
+- Exact email and phone matches go through 01's `exact_id` rule, not SQL equality, so the first-name gate, the DOB guard and the conflict split all apply. SQL handles only structural links: opportunity → `crm_id`, form submission → its own `anonymous_id`.
+
+## Which 01 rules fire on 02's fields
+
+These are the person records sent to 01:
+
+| 01 column | From CRM contact | From form submission |
+|---|---|---|
+| `record_id` | `crm:<crm_id>` | `form:<source_event_id>` |
+| `source` | `crm` | `web_form` |
+| `first_name`, `last_name` | yes | yes (form properties) |
+| `email` | yes | yes |
+| `email_verified` | yes (added in M1) | no (empty) |
+| `phone` | yes | optional |
+| `address`, `city`, `state`, `zip` | yes (added in M1) | no |
+| `dob` | 30% of contacts (configurable) | no |
+| `updated_at` | `updated_at` | `occurred_at` |
+
+`company` and `title` aren't 01 inputs, so they are not exported.
+
+The rules, as read from 01's `scoring.py`, `blocking.py` and `merge.py` before tagging:
+
+| 01 rule / stage | Fires in 02? | Notes |
+|---|---|---|
+| Normalizers (name + nicknames, email gmail dots/`+tag`, E.164 phone, address, date) | **Yes** | Every person record goes through them. |
+| Blocking: email local part | **Yes** | Contacts and form submissions. |
+| Blocking: phone last 7 | **Yes, partly** | All contacts; only forms where the generator collects phone. |
+| Blocking: name Soundex + ZIP | **Contacts only** | Forms have no ZIP, so a form fill reaches its contact only through email or phone. |
+| Safety rule: conflicting email **and** phone → `NO_MATCH` (`conflict`) | **Yes** | Needs both identifiers on both records. Pairs where a form has no phone can never hit it. |
+| `exact_id` → MATCH when first names agree (Jaro-Winkler ≥ 0.80) | **Yes** | The main merge path in 02. |
+| `exact_id_no_name` → REVIEW | **Rarely** | Only if a record lacks a first name; the generator always fills it. Confirm at M3. |
+| `shared_identifier` → REVIEW (first names disagree) | **Yes** | `shared_household_phone` hazard pairs should land here. |
+| `exact_id_dob_mismatch` → REVIEW | **Only contact–contact pairs with both DOBs** | With 30% DOB coverage, about 9% of contact pairs have both DOBs. Forms never carry DOB. |
+| Missing-DOB gap (identical names, DOB missing → MATCH) | **Yes, deliberately** | `same_name_relative` pairs with a DOB missing are expected to merge sometimes. Reported in the hard-case table, split by DOB presence. |
+| `exact_id_other_mismatch` → REVIEW | **Yes** | Contact–contact pairs; form–contact pairs only when the form has a phone. |
+| Weighted score (email 0.35, phone 0.25, name 0.25, address 0.15) | **Yes, never auto-merges** | `allow_weighted_match = false` in 01. It only chooses REVIEW or NO_MATCH. Address counts only on contact–contact pairs. |
+| `weighted_low_evidence`, `weighted_id_mismatch`, `weighted_match_disabled` | **Yes** | REVIEW reasons only. |
+| Conflict-aware clustering (split components containing a conflict pair) | **Yes** | Applies to every MATCH-connected component, including those formed through form submissions. |
+| Survivorship: verified first, then most recent; field groups kept whole | **Yes, contacts dominate** | Forms have `email_verified` empty, so a verified contact always outranks them. Whether 02 uses 01's golden record or its own profile-field rules: **confirm at M3.** |
+| Audit log and `unmerge` | **Available, unused at first** | `link_evidence` keeps the pair evidence. Exposing undo in 02 is out of scope until after M7. |
+| Review UI / `apply-review` | **No** | 02 has no human review loop. REVIEW pairs stay unmerged and are counted. |
+| `city`, `state` | **Not scored** | 01 scores only the `address` (street) field and uses `zip` only for blocking. They're exported anyway so survivorship keeps the address group whole. |
+
+### Confirm at M3
+
+These points are unverified until 01 `v1.0.0` runs against real 02 output:
+
+- 01's `load_sources` concatenates every CSV in the directory; confirm that one combined CSV with an empty `dob` / `address` on form rows loads as expected.
+- `confidence` in `core.identity_link`: proposed value is 1.0 for structural links, and for 01 links the score of the strongest kept MATCH edge. 01's `score` for an `exact_id` MATCH is the weighted similarity, not a probability, so this column may need a different meaning.
+- Runtime at about 7k contacts plus about 10–20k form submissions. 01 ran 50k records in 4.8 s, so this should be small.
+- Whether `exact_id_no_name` ever fires (see table).
+- Golden record versus 02's own profile fields (see table).
+
+## Consequences
+
+- From M3 on, the stitch step, the `stitch-eval` CI job and `pnpm seed` need Python 3.12 and `uv`.
+- 02's identity numbers depend on a pinned version of 01. `docs/results.md` must name the tag.
+- 01's known limitations carry over, and 02 must report them rather than hide them:
+  - same-name relatives with a missing DOB can merge;
+  - household members with similar first names sharing a phone can merge;
+  - identity drift where a person changes both phone and email stays split.
