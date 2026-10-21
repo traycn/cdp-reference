@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+    environment:
+      POSTGRES_USER: cdp
+      POSTGRES_PASSWORD: cdp_local_only
+      POSTGRES_DB: cdp
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cdp -d cdp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  adminer:
+    image: adminer:5.5.1@sha256:196b3407affbab8adc294ba20f235b1fbe445e3870966c6f577f61560cf26e0d
+    ports: ["8080:8080"]
+    depends_on: [db]
+
+  # Applies pending migrations on `docker compose up`, then exits.
+  # Run other commands with `docker compose run --rm dbmate <cmd>` (pnpm db:*).
+  dbmate:
+    image: ghcr.io/amacneil/dbmate:2.37.0@sha256:0101fcc9999596f4a6930e5627296cd91f3bfa225e3e8c1699fc00881e439cc6
+    environment:
+      DATABASE_URL: postgres://cdp:cdp_local_only@db:5432/cdp?sslmode=disable
+      DBMATE_MIGRATIONS_DIR: /db/migrations
+      DBMATE_SCHEMA_FILE: /db/schema.sql
+    volumes: ["./db:/db"]
+    command: ["--wait", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

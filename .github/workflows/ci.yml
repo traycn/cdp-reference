@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+
+  # Migrations go up, down and up again on a clean Postgres 16, and the schema
+  # dump from each `up` must match the committed db/schema.sql. dbmate runs from
+  # the same pinned image as docker-compose.yml, so pg_dump output is identical.
+  migrate:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DBMATE_IMAGE: ghcr.io/amacneil/dbmate:2.37.0@sha256:0101fcc9999596f4a6930e5627296cd91f3bfa225e3e8c1699fc00881e439cc6
+      POSTGRES_IMAGE: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Images match docker-compose.yml
+        run: |
+          grep -qF "$DBMATE_IMAGE" docker-compose.yml
+          grep -qF "$POSTGRES_IMAGE" docker-compose.yml
+      - name: Define helpers
+        run: |
+          cat > "$RUNNER_TEMP/helpers.sh" <<'EOF'
+          dbmate() {
+            docker run --rm --network host \
+              -e DATABASE_URL \
+              -e DBMATE_MIGRATIONS_DIR=/db/migrations \
+              -e DBMATE_SCHEMA_FILE=/db/schema.sql \
+              -v "$GITHUB_WORKSPACE/db:/db" \
+              "$DBMATE_IMAGE" --wait "$@"
+          }
+          psql_q() {
+            docker run --rm --network host --entrypoint psql "$DBMATE_IMAGE" \
+              "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "$1"
+          }
+          schema_matches_committed() {
+            if [ -n "$(git status --porcelain -- db/schema.sql)" ]; then
+              echo "::error file=db/schema.sql::Schema dump differs from the committed db/schema.sql. Run 'pnpm db:migrate' and commit it."
+              git diff -- db/schema.sql
+              return 1
+            fi
+          }
+          EOF
+      - name: dbmate up
+        run: |
+          . "$RUNNER_TEMP/helpers.sh"
+          dbmate up
+          schema_matches_committed
+      - name: dbmate rollback leaves nothing behind
+        run: |
+          . "$RUNNER_TEMP/helpers.sh"
+          dbmate rollback
+          left="$(psql_q "
+            SELECT nspname FROM pg_namespace WHERE nspname IN ('raw', 'staging', 'core', 'eval')
+            UNION ALL SELECT extname FROM pg_extension WHERE extname = 'uuid-ossp'
+            UNION ALL SELECT version FROM public.schema_migrations")"
+          if [ -n "$left" ]; then
+            echo "::error::rollback left objects behind: $left"
+            exit 1
+          fi
+      - name: dbmate up again
+        run: |
+          . "$RUNNER_TEMP/helpers.sh"
+          dbmate up
+          schema_matches_committed

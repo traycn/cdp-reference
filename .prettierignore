@@ -1,0 +1,4 @@
+pnpm-lock.yaml
+db/
+# Docs are prose with hand-aligned tables; docs/acceptance.md is frozen.
+**/*.md
