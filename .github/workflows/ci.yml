@@ -95,3 +95,61 @@ jobs:
           . "$RUNNER_TEMP/helpers.sh"
           dbmate up
           schema_matches_committed
+
+  # vitest in every workspace package that has a `test` script. The coverage
+  # gates (attribution 100% branch, marketing-logic ≥ 90% line) go into those
+  # packages' test scripts with their first tests in M5–M6.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  # Development seeds only; held-out seeds stay unrun until acceptance-frozen.
+  # For each seed: generate twice (byte-identical, hash equal to
+  # services/ingest/seed-hashes.json), counts inside docs/acceptance.md ranges,
+  # then load twice (the second load must change no row and no max(loaded_at)).
+  # The profile hash check joins this job with stitching in M3.
+  seed-idempotency:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DBMATE_IMAGE: ghcr.io/amacneil/dbmate:2.37.0@sha256:0101fcc9999596f4a6930e5627296cd91f3bfa225e3e8c1699fc00881e439cc6
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: dbmate up
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL \
+            -e DBMATE_MIGRATIONS_DIR=/db/migrations \
+            -e DBMATE_SCHEMA_FILE=/tmp/schema.sql \
+            -v "$GITHUB_WORKSPACE/db:/db:ro" \
+            "$DBMATE_IMAGE" --wait --no-dump-schema up
+      - name: Generate and load the development seeds twice
+        working-directory: services/ingest
+        run: node verify.ts --seed 42 --seed 7 --seed 1234

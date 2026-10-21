@@ -4,13 +4,15 @@
   "type": "module",
   "packageManager": "pnpm@12.14.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "seed": "pnpm --filter @cdp/ingest run seed",
     "db:migrate": "docker compose run --rm dbmate --wait up",
     "db:rollback": "docker compose run --rm dbmate rollback",
     "db:status": "docker compose run --rm dbmate status"

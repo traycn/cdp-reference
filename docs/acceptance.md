@@ -29,7 +29,7 @@ The generator writes ground truth into the `eval` schema. The app and the dashbo
   - `multi_device`: two or more devices.
   - `email_changed`: two CRM contacts, different emails, same phone.
 
-  A person has exactly one kind; when several apply, the first in this list order wins.
+  A person has exactly one kind; when several apply, the first in this list order wins. `ordinary` is the fallback: it applies only when none of the other three do (clarified 2026-10-21, see change log).
 - `eval.truth_hazard_pair(person_a, person_b, kind)`: two **different** people who look alike.
   - `same_name_relative`: same first and last name, sharing a phone or email (Jr./Sr.).
   - `shared_household_phone`: different first names, same phone.
@@ -72,6 +72,22 @@ Report only, per seed. A merge of a hazard pair is never counted as a win.
 | Idempotent stitch | Re-stitching changes neither row counts nor the hash of the sorted list of each `profile_id` and its sorted `(id_type, id_value)` pairs |
 | DOB rate | Share of CRM contacts with `dob` in 0.28–0.32 |
 | Row counts (per seed, 10,000 people) | `raw.crm_contact` 6,000–8,000 · `raw.ad_click` 30,000–60,000 · `raw.web_event` 150,000–300,000 · `raw.crm_opportunity` 1,500–2,500. A count outside its range fails the run. |
+| Ground-truth and form counts (per seed, 10,000 people; added 2026-10-21) | See [below](#ground-truth-and-form-counts). A count outside its range fails the run. |
+
+### Ground-truth and form counts
+
+Written down on 2026-10-21, before the generator existed, from its design parameters. With a different `--people`, every range scales linearly. Both the generator (on its output files) and the loader (on the database, before commit) check them. A failed check fails the run.
+
+| Count | Range |
+|---|---|
+| Form submissions (`raw.web_event` where `event_name = 'form_submit'`) | 7,500–10,500 |
+| `eval.truth_record`, `unit_type = 'crm_contact'` | Equal to `raw.crm_contact` |
+| `eval.truth_record`, `unit_type = 'form_submission'` | Equal to the form submission count |
+| `eval.truth_record`, `unit_type = 'device'` | 11,000–12,700, and equal to the distinct non-null `anonymous_id`s across `raw.web_event` and `raw.ad_click` |
+| Distinct `person_id` in `eval.truth_record` | Exactly 10,000 (every person has at least one unit) |
+| People by kind | `ordinary` 7,300–7,900 · `multi_email` 500–700 · `multi_device` 1,300–1,700 · `email_changed` 250–350 |
+| `eval.truth_hazard_pair` | `same_name_relative` exactly 150 · `shared_household_phone` exactly 150 |
+| Hazard pairs per DOB group (both present / one missing / both missing), per kind | ≥ 40 each when `0 < --dob-rate < 1` |
 
 ## Definitions and models
 
@@ -98,3 +114,5 @@ Report only, per seed. A merge of a hazard pair is never counted as a win.
 | Date | Change | Reason | Numbers seen before the change |
 |---|---|---|---|
 | 2026-10-20 | Initial version | — | None (no data existed) |
+| 2026-10-21 | `person_kind`: `ordinary` is the fallback when no other kind applies | Read literally, "one email, one or more devices" plus first-wins made almost no one `multi_device` | None (no generator existed) |
+| 2026-10-21 | Added [ground-truth and form counts](#ground-truth-and-form-counts) | M2 needs a range for every table it writes, not only the four raw tables | None (no generator existed) |

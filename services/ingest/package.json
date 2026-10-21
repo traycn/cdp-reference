@@ -2,5 +2,23 @@
   "name": "@cdp/ingest",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.ts",
+    "load": "node load.ts",
+    "seed": "node generate.ts --seed 42 --out ../../.data/seed-42 && node load.ts --dir ../../.data/seed-42",
+    "verify": "node verify.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "pg": "8.23.1",
+    "pg-copy-streams": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
+    "@types/pg-copy-streams": "1.2.5",
+    "vitest": "5.0.3"
+  }
 }

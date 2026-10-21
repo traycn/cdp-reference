@@ -78,6 +78,10 @@ docker-compose.yml
 - **Structural links** are done in SQL with confidence 1.0: opportunity → `crm_id`, form submission → its own `anonymous_id`.
 - **Devices.** An `anonymous_id` attaches to the profile of its form submissions when they all agree. A device whose submissions fall in two profiles stays unattached and is counted (`device_conflict`). A device never merges profiles.
 - Write `core.identity_link` (source, confidence) and `core.link_evidence`. Which 01 rules fire on these fields: ADR 0001.
+- **Open decision (must be settled before M6): which channel a form submission gets.** `form_submit` events have no referrer or UTM tags, so `staging.web_event` currently labels them `direct`. Options:
+  - form submissions are not touchpoints at all (they're conversions/person records, not marketing contacts); or
+  - a form submission inherits the channel of the device's preceding web event (its session's entry page view).
+  Record the choice and its reason here or in an ADR.
 - **Accept:** the `docs/acceptance.md` identity metrics — precision, completeness, safety, hard-case report — on the dev seeds, then on the held-out seeds after thresholds are frozen. CI: `stitch-eval`, `reproduce`.
 
 ### M4 — Definitions
