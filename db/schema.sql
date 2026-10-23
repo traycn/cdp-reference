@@ -58,6 +58,30 @@ COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UU
 
 
 --
+-- Name: lifecycle_history_forward_only(); Type: FUNCTION; Schema: core; Owner: -
+--
+
+CREATE FUNCTION core.lifecycle_history_forward_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  stages CONSTANT TEXT[] := ARRAY['lead', 'mql', 'sql', 'opportunity', 'won'];
+  prev TEXT;
+BEGIN
+  SELECT stage INTO prev FROM core.lifecycle_history
+  WHERE profile_id = NEW.profile_id AND seq < NEW.seq
+  ORDER BY seq DESC LIMIT 1;
+  IF prev IS NOT NULL
+     AND array_position(stages, NEW.stage) < array_position(stages, prev)
+     AND NEW.reason IS NULL THEN
+    RAISE EXCEPTION 'lifecycle stage of % moves backward (% to %) without a reason',
+      NEW.profile_id, prev, NEW.stage;
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
 -- Name: profile_uuid(text); Type: FUNCTION; Schema: core; Owner: -
 --
 
@@ -72,7 +96,7 @@ CREATE FUNCTION core.profile_uuid(anchor_key text) RETURNS uuid
 
 CREATE FUNCTION staging.channel_for(utm_source text, utm_medium text, referrer text) RETURNS text
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    RETURN (SELECT CASE WHEN (norm.m = ANY (ARRAY['cpc'::text, 'ppc'::text, 'paid_search'::text, 'sem'::text])) THEN 'paid_search'::text WHEN (norm.m = ANY (ARRAY['paid_social'::text, 'paidsocial'::text, 'social_paid'::text, 'cpm'::text])) THEN 'paid_social'::text WHEN (norm.m = ANY (ARRAY['email'::text, 'e-mail'::text, 'newsletter'::text])) THEN 'email'::text WHEN (norm.m = ANY (ARRAY['organic'::text, 'social'::text, 'organic_social'::text])) THEN 'organic'::text WHEN (norm.m = 'referral'::text) THEN 'referral'::text WHEN ((norm.m IS NOT NULL) OR (norm.s IS NOT NULL)) THEN 'unattributed'::text WHEN (norm.r IS NULL) THEN 'direct'::text WHEN (norm.r ~ '^(https?://)?([a-z0-9-]+\.)*(google|bing|duckduckgo|yahoo|ecosia)\.'::text) THEN 'organic'::text ELSE 'referral'::text END AS "case" FROM (SELECT NULLIF(lower(btrim(channel_for.utm_source)), ''::text) AS s, NULLIF(lower(btrim(channel_for.utm_medium)), ''::text) AS m, NULLIF(lower(btrim(channel_for.referrer)), ''::text) AS r) norm);
+    RETURN (SELECT CASE WHEN (norm.m = ANY (ARRAY['cpc'::text, 'ppc'::text, 'paid_search'::text, 'sem'::text])) THEN 'paid_search'::text WHEN (norm.m = ANY (ARRAY['paid_social'::text, 'paidsocial'::text, 'social_paid'::text, 'cpm'::text])) THEN 'paid_social'::text WHEN (norm.m = ANY (ARRAY['email'::text, 'e-mail'::text, 'newsletter'::text])) THEN 'email'::text WHEN (norm.m = ANY (ARRAY['organic'::text, 'social'::text, 'organic_social'::text])) THEN 'organic'::text WHEN (norm.m = 'referral'::text) THEN 'referral'::text WHEN ((norm.m IS NOT NULL) OR (norm.s IS NOT NULL)) THEN 'unattributed'::text WHEN (norm.r IS NULL) THEN 'direct'::text WHEN (norm.r ~ '^(https?://)?([a-z0-9-]+\.)*northbeam-cdp\.example([:/?#]|$)'::text) THEN 'direct'::text WHEN (norm.r ~ '^(https?://)?([a-z0-9-]+\.)*(google|bing|duckduckgo|yahoo|ecosia)\.'::text) THEN 'organic'::text ELSE 'referral'::text END AS "case" FROM (SELECT NULLIF(lower(btrim(channel_for.utm_source)), ''::text) AS s, NULLIF(lower(btrim(channel_for.utm_medium)), ''::text) AS m, NULLIF(lower(btrim(channel_for.referrer)), ''::text) AS r) norm);
 
 
 --
@@ -161,6 +185,22 @@ CREATE TABLE core.lead_score (
     engagement_score integer NOT NULL,
     total_score integer GENERATED ALWAYS AS ((fit_score + engagement_score)) STORED,
     scored_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: lifecycle_history; Type: TABLE; Schema: core; Owner: -
+--
+
+CREATE TABLE core.lifecycle_history (
+    profile_id uuid NOT NULL,
+    seq integer NOT NULL,
+    stage text NOT NULL,
+    reason text,
+    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT lifecycle_history_reason_check CHECK (((reason IS NULL) OR (btrim(reason) <> ''::text))),
+    CONSTRAINT lifecycle_history_seq_check CHECK ((seq >= 1)),
+    CONSTRAINT lifecycle_history_stage_check CHECK ((stage = ANY (ARRAY['lead'::text, 'mql'::text, 'sql'::text, 'opportunity'::text, 'won'::text])))
 );
 
 
@@ -450,12 +490,29 @@ CREATE VIEW staging.web_event AS
     utm_source,
     utm_medium,
     utm_campaign,
-    staging.channel_for(utm_source, utm_medium, referrer) AS channel,
-    staging.normalize_email(email) AS email,
+        CASE
+            WHEN ((properties ->> 'session_id'::text) IS NULL) THEN own_channel
+            ELSE first_value(own_channel) OVER (PARTITION BY (properties ->> 'session_id'::text) ORDER BY occurred_at, (source_event_id COLLATE "C"))
+        END AS channel,
+    email,
     properties,
     loaded_at,
     batch_id
-   FROM raw.web_event;
+   FROM ( SELECT web_event.source_event_id,
+            web_event.occurred_at,
+            web_event.anonymous_id,
+            web_event.event_name,
+            web_event.page_path,
+            web_event.referrer,
+            web_event.utm_source,
+            web_event.utm_medium,
+            web_event.utm_campaign,
+            staging.channel_for(web_event.utm_source, web_event.utm_medium, web_event.referrer) AS own_channel,
+            staging.normalize_email(web_event.email) AS email,
+            web_event.properties,
+            web_event.loaded_at,
+            web_event.batch_id
+           FROM raw.web_event) e;
 
 
 --
@@ -503,6 +560,14 @@ ALTER TABLE ONLY core.identity_link
 
 ALTER TABLE ONLY core.lead_score
     ADD CONSTRAINT lead_score_pkey PRIMARY KEY (profile_id);
+
+
+--
+-- Name: lifecycle_history lifecycle_history_pkey; Type: CONSTRAINT; Schema: core; Owner: -
+--
+
+ALTER TABLE ONLY core.lifecycle_history
+    ADD CONSTRAINT lifecycle_history_pkey PRIMARY KEY (profile_id, seq);
 
 
 --
@@ -678,6 +743,13 @@ CREATE INDEX web_event_anonymous_id_occurred_at_idx ON raw.web_event USING btree
 
 
 --
+-- Name: lifecycle_history lifecycle_history_forward_only; Type: TRIGGER; Schema: core; Owner: -
+--
+
+CREATE TRIGGER lifecycle_history_forward_only BEFORE INSERT ON core.lifecycle_history FOR EACH ROW EXECUTE FUNCTION core.lifecycle_history_forward_only();
+
+
+--
 -- Name: conversion conversion_profile_id_fkey; Type: FK CONSTRAINT; Schema: core; Owner: -
 --
 
@@ -699,6 +771,14 @@ ALTER TABLE ONLY core.identity_link
 
 ALTER TABLE ONLY core.lead_score
     ADD CONSTRAINT lead_score_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES core.customer_profile(profile_id) ON DELETE CASCADE;
+
+
+--
+-- Name: lifecycle_history lifecycle_history_profile_id_fkey; Type: FK CONSTRAINT; Schema: core; Owner: -
+--
+
+ALTER TABLE ONLY core.lifecycle_history
+    ADD CONSTRAINT lifecycle_history_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES core.customer_profile(profile_id) ON DELETE CASCADE;
 
 
 --
@@ -724,4 +804,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('001'),
     ('002'),
     ('003'),
-    ('004');
+    ('004'),
+    ('005'),
+    ('006');

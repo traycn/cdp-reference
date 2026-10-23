@@ -46,3 +46,19 @@ Options for form submissions (from CLAUDE.md):
   - **Whether each page view is a touchpoint, or only the session's entry event.** With decision 2, every page view in a session carries the same channel. Counting all of them weights linear and time-decay credit by session length, not by number of visits. I lean toward one touchpoint per session (its entry event), but this needs its own decision.
   - **Ad clicks and their landing page views describe the same visit.** The click is in `raw.ad_click`; the landing page view, with the same UTM tags, is in `raw.web_event`. Counting both credits a paid visit twice.
 - `docs/definitions.md` (M4) explains both rules next to the channel table.
+
+## M4 amendment (2026-10-23)
+
+M4 implemented the rules above. These are the choices it made where this ADR was silent, all accepted by the project owner on 2026-10-23. They are also written out in [definitions.md](../definitions.md).
+
+**Where session continuation lives: a SQL window.** `staging.web_event.channel` is the channel of the session's entry event, computed with `first_value() OVER (PARTITION BY session_id ORDER BY occurred_at, source_event_id COLLATE "C")` (migration `005_channel_site_host.sql`). `staging.channel_for` stays a pure function of one event; it only gained the site-host rule (an internal referrer with no tags is `direct`). The M6 touchpoint builder reads `staging.web_event.channel` and does not repeat the rule. `definitions.ts` has the same rule in `sessionChannels`; the parity test compares the two.
+
+Calls made while implementing M4:
+
+1. **The entry event** is the earliest event of the session; a tie goes to the smaller `source_event_id` in byte order, so the result does not depend on database collation.
+2. **The session's entry channel replaces the channel of every later event**, including a later event with its own UTM tags or an external referrer. This is the literal reading of decision 2.
+3. **`closed_lost` proves no lifecycle stage.** The CRM keeps only a deal's final stage, so a loss does not say how far the deal got.
+4. **`closed_won` without `won = true` is an Opportunity, not Won.** Won needs both.
+5. **A profile's stage is the highest criterion it meets, not a sequence.** A CRM contact with no form fill and a `qualification` deal is an SQL and never an MQL, so it has no `mql` conversion.
+
+**Known M6 consideration.** Call 2 may undercount mid-session paid clicks. If a visitor enters a session through an organic search and later in the same session arrives from a tagged paid link (or a new tagged page view), the later paid contact is credited to `organic`. The generator never produces this: tags appear only on a session's first event, so the rule changes nothing on the synthetic feeds. On real data it could matter. M6 decides, together with the two open questions above, whether a tagged event later in a session starts a new session or becomes its own touchpoint. Changing it means changing `staging.web_event`, `sessionChannels` and the parity table together.

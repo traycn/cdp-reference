@@ -1,0 +1,20 @@
+{
+  "name": "@cdp/lifecycle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "materialize": "node cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@cdp/marketing-logic": "workspace:*",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
+    "vitest": "5.0.3"
+  }
+}

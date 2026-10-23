@@ -96,11 +96,29 @@ jobs:
           dbmate up
           schema_matches_committed
 
-  # vitest in every workspace package that has a `test` script. The coverage
-  # gates (attribution 100% branch, marketing-logic ≥ 90% line) go into those
-  # packages' test scripts with their first tests in M5–M6.
+  # vitest in every workspace package that has a `test` script. marketing-logic
+  # runs with its ≥ 90% line coverage gate (vitest.config.ts); the attribution gate
+  # (100% branch) goes into that package's test script in M6. marketing-logic's
+  # channel parity test makes a throwaway database next to DATABASE_URL, applies
+  # db/migrations and runs the shared case table through the staging SQL; with CI
+  # set, a missing Postgres fails it instead of skipping it.
   test:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: pnpm/action-setup@v6.1.0
@@ -151,6 +169,10 @@ jobs:
   # services/ingest/seed-hashes.json), counts inside docs/acceptance.md ranges,
   # then load twice (the second load must change no row and no max(loaded_at)).
   # Then, per seed, stitch twice: row counts and the profile hash must not change.
+  # Then materialize lifecycle stages and conversions and run it again: row counts and
+  # the conversion hash must not change, every Won profile must have a won opportunity,
+  # and no stage may move backward without a recorded reason. The per-seed report
+  # (stage counts, mql and won conversions, backward moves) goes to the log.
   seed-idempotency:
     runs-on: ubuntu-24.04
     services:
@@ -192,11 +214,12 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: services/stitch/uv.lock
-      - name: Stitch each seed twice; the profile hash must not change
+      - name: Stitch and materialize each seed; re-runs must change nothing
         run: |
           for seed in 42 7 1234; do
             (cd services/ingest && node load.ts --dir "../../.data/seed-$seed")
             (cd services/stitch && uv run --locked cdp-stitch idempotency)
+            (cd services/lifecycle && node cli.ts run --new-dataset && node cli.ts verify)
           done
 
   # Development seeds only. Generate, load, stitch and evaluate each seed, then

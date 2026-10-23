@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Generate, load and stitch each given seed, one after another. `pnpm seed`
-# runs it for seed 42; scripts/stitch-eval.sh runs it before evaluating.
+# Generate, load, stitch and materialize (lifecycle stages, history, conversions)
+# each given seed, one after another. `pnpm seed` runs it for seed 42;
+# scripts/stitch-eval.sh runs it before evaluating.
 #
 #   scripts/seed.sh 42
 #
@@ -20,5 +21,9 @@ for seed in "$@"; do
   (
     cd "$root/services/stitch"
     uv run --locked cdp-stitch run
+  )
+  (
+    cd "$root/services/lifecycle"
+    node cli.ts run --new-dataset
   )
 done

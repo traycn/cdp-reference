@@ -1,2 +1,3 @@
-// Lifecycle definitions, channel mapping and lead scoring land here in M4–M5.
+// Lifecycle definitions and channel mapping (M4); lead scoring lands here in M5.
 export type { Channel } from "@cdp/attribution";
+export * from "./definitions.ts";
