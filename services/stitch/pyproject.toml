@@ -1,0 +1,46 @@
+[project]
+name = "cdp-stitch"
+version = "0.1.0"
+description = "Identity stitching for the CDP: export person records, resolve them with entity-resolution (project 01), load profiles and links."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "entity-resolution",
+  "psycopg[binary]>=3.2",
+]
+
+[project.scripts]
+cdp-stitch = "cdp_stitch.cli:main"
+
+[tool.uv.sources]
+# Pinned to a tag on purpose (docs/adr/0001-reuse-entity-resolution.md). Upgrading
+# 01 is a deliberate change here, followed by a re-run of docs/acceptance.md.
+entity-resolution = { git = "https://github.com/traycn/entity-resolution", tag = "v1.0.0" }
+
+[dependency-groups]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8",
+  "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cdp_stitch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

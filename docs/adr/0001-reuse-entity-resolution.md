@@ -62,7 +62,7 @@ These are the person records sent to 01:
 | `phone` | yes | optional |
 | `address`, `city`, `state`, `zip` | yes (added in M1) | no |
 | `dob` | 30% of contacts (configurable) | no |
-| `updated_at` | `updated_at` | `occurred_at` |
+| `updated_at` | `updated_at`, as the UTC day | `occurred_at`, as the UTC day |
 
 `company` and `title` aren't 01 inputs, so they are not exported.
 
@@ -76,28 +76,55 @@ The rules, as read from 01's `scoring.py`, `blocking.py` and `merge.py` before t
 | Blocking: name Soundex + ZIP | **Contacts only** | Forms have no ZIP, so a form fill reaches its contact only through email or phone. |
 | Safety rule: conflicting email **and** phone → `NO_MATCH` (`conflict`) | **Yes** | Needs both identifiers on both records. Pairs where a form has no phone can never hit it. |
 | `exact_id` → MATCH when first names agree (Jaro-Winkler ≥ 0.80) | **Yes** | The main merge path in 02. |
-| `exact_id_no_name` → REVIEW | **Rarely** | Only if a record lacks a first name; the generator always fills it. Confirm at M3. |
+| `exact_id_no_name` → REVIEW | **No** | Needs a record without a first name; the generator always fills it. Fired 0 times on the three dev seeds. |
 | `shared_identifier` → REVIEW (first names disagree) | **Yes** | `shared_household_phone` hazard pairs should land here. |
-| `exact_id_dob_mismatch` → REVIEW | **Only contact–contact pairs with both DOBs** | With 30% DOB coverage, about 9% of contact pairs have both DOBs. Forms never carry DOB. |
-| Missing-DOB gap (identical names, DOB missing → MATCH) | **Yes, deliberately** | `same_name_relative` pairs with a DOB missing are expected to merge sometimes. Reported in the hard-case table, split by DOB presence. |
+| `exact_id_dob_mismatch` → REVIEW | **Only contact–contact pairs with both DOBs** | With 30% DOB coverage, about 9% of contact pairs have both DOBs. Forms never carry DOB. The guard is pairwise, so a form submission can bridge the pair it sent to REVIEW (see [bridge records](#bridge-records-defeat-the-dob-guard)). |
+| Missing-DOB gap (identical names, DOB missing → MATCH) | **Yes, deliberately** | `same_name_relative` pairs with a DOB missing merged in every case on the dev seeds (100 of 100 per seed). Reported in the hard-case table, split by DOB presence. |
 | `exact_id_other_mismatch` → REVIEW | **Yes** | Contact–contact pairs; form–contact pairs only when the form has a phone. |
 | Weighted score (email 0.35, phone 0.25, name 0.25, address 0.15) | **Yes, never auto-merges** | `allow_weighted_match = false` in 01. It only chooses REVIEW or NO_MATCH. Address counts only on contact–contact pairs. |
 | `weighted_low_evidence`, `weighted_id_mismatch`, `weighted_match_disabled` | **Yes** | REVIEW reasons only. |
-| Conflict-aware clustering (split components containing a conflict pair) | **Yes** | Applies to every MATCH-connected component, including those formed through form submissions. |
-| Survivorship: verified first, then most recent; field groups kept whole | **Yes, contacts dominate** | Forms have `email_verified` empty, so a verified contact always outranks them. Whether 02 uses 01's golden record or its own profile-field rules: **confirm at M3.** |
+| Conflict-aware clustering (split components containing a conflict pair) | **Yes, but never split on the dev seeds** | Applies to every MATCH-connected component, including those formed through form submissions. Only conflicting email **and** phone count as a conflict; a REVIEW pair is not kept apart. |
+| Survivorship: verified first, then most recent; field groups kept whole | **Yes, contacts dominate** | Forms have `email_verified` empty, so a verified contact always outranks them. 02 uses 01's golden record for the profile's name, email and phone (see below). Recency is compared by day. |
 | Audit log and `unmerge` | **Available, unused at first** | `link_evidence` keeps the pair evidence. Exposing undo in 02 is out of scope until after M7. |
 | Review UI / `apply-review` | **No** | 02 has no human review loop. REVIEW pairs stay unmerged and are counted. |
 | `city`, `state` | **Not scored** | 01 scores only the `address` (street) field and uses `zip` only for blocking. They're exported anyway so survivorship keeps the address group whole. |
 
-### Confirm at M3
+### Confirmed at M3 (2026-10-22)
 
-These points are unverified until 01 `v1.0.0` runs against real 02 output:
+These were open until 01 `v1.0.0` (commit `df0287a`) ran on 02's output, on dev seeds 42, 7 and 1234.
 
-- 01's `load_sources` concatenates every CSV in the directory; confirm that one combined CSV with an empty `dob` / `address` on form rows loads as expected.
-- `confidence` in `core.identity_link`: proposed value is 1.0 for structural links, and for 01 links the score of the strongest kept MATCH edge. 01's `score` for an `exact_id` MATCH is the weighted similarity, not a probability, so this column may need a different meaning.
-- Runtime at about 7k contacts plus about 10–20k form submissions. 01 ran 50k records in 4.8 s, so this should be small.
-- Whether `exact_id_no_name` ever fires (see table).
-- Golden record versus 02's own profile fields (see table).
+- **How 01 is called.** `services/stitch` calls 01's own `run` command function (`resolver.cli.run`) in-process, unchanged. It is the same code path as `resolver run --sources DIR --out DIR`. 02 reads 01's output files: `clusters.csv`, `golden.csv`, `audit.jsonl`, `splits.jsonl` and `review.jsonl`.
+- **One combined CSV.** Confirmed. CRM contacts and form submissions go into a single `person_records.csv`. 01 reads every column as a string, and an empty field is null, so form rows with empty `dob`, `address`, `city`, `state`, `zip` and `email_verified` load as missing values.
+- **`updated_at` is sent as the UTC day (`YYYY-MM-DD`).** 01's `normalize_date` parses dates, not timestamps. A full ISO timestamp would parse as missing, and survivorship would silently lose its "most recent" step. As a result, recency is compared by day, and two records updated on the same day fall back to 01's `record_id` order.
+- **`confidence` in `core.identity_link` is 1.0 for every link.** Every link comes from a deterministic rule:
+  - 01's `exact_id` (with `allow_weighted_match = false`, nothing else auto-merges);
+  - a foreign key (opportunity → `crm_id`);
+  - a device whose form submissions all agree.
+
+  01's `score` is a weighted similarity, not a probability, so it stays in `core.link_evidence.score` and is not copied into `confidence`. The column is kept for a future probabilistic source.
+- **Runtime.** Small, as expected. Each dev seed has about 15.8k person records (about 7k contacts and 8.8k form submissions). The 01 step takes about 2.3 s, and the whole stitch run (export, resolve, load) about 4 s, on a local Apple-silicon laptop. Measured numbers will be reported in `docs/results.md`.
+- **`exact_id_no_name` never fires** (0 on every dev seed), because every record has a first name.
+- **Golden record.** The profile's `full_name`, `primary_email` and `primary_phone` come from 01's golden record.
+  - `company` isn't a 01 field. It is taken from the record that supplied the golden name, so it stays consistent with the name.
+  - `lifecycle_stage` and the other profile fields are 02's own (M4).
+- **Link evidence and the `SPLIT` name.** Confirmed: `SPLIT` is 02's label for a MATCH edge listed in 01's `splits.jsonl` under `rejected_edges`. 01 describes these as edges cut when a component is "split by the conflict check". The `rule` column keeps the edge's original 01 rule, e.g. `exact_id`.
+  - `MATCH` rows are the edges kept inside a cluster (`audit.jsonl`), and `REVIEW` rows come from `review.jsonl`.
+  - 01's CLI doesn't write NO_MATCH pairs, so `link_evidence` has none.
+  - No component was split on any dev seed, so there are 0 `SPLIT` rows.
+- **Opportunity links needed a schema change.** `core.identity_link.id_type` had no value for opportunities. Migration `002_opportunity_links.sql` adds `opp_id`, unique like the other units.
+
+### Bridge records defeat the DOB guard
+
+This wasn't anticipated above. It is the main identity finding of M3.
+
+- 01 sends a same-name pair with differing DOBs to REVIEW (`exact_id_dob_mismatch`). It does so correctly, but only for that pair.
+- A form submission carries no DOB. When a Jr. and Sr. share an email or a phone, a form with that identifier and the same name matches **both** contacts by `exact_id`.
+- 01's clustering keeps apart only pairs whose email and phone both conflict. The REVIEW pair is joined through the form.
+- Example, seed 42 (P00085 / P04488):
+  - C000335–C004041: REVIEW, `exact_id_dob_mismatch`.
+  - Forms W0009174 and W0121582 carry only an email. Each has a MATCH (`exact_id`) with both contacts, so the two contacts end up in one cluster.
+- On the dev seeds, 39, 35 and 37 of the 50 `same_name_relative` pairs with **both** DOBs present merged this way. The pairs with one or both DOBs missing merged in every case. These merges are the only wrong merges on the dev seeds, and they are why pairwise precision is about 0.955.
+- **Fix (decided, not yet made):** in 01, `exact_id_dob_mismatch` pairs become hard cannot-links in conflict-aware clustering, so a bridge record can't join them. It ships as 01 `v1.1.0`, is re-measured in 01, and 02 then moves its pin. 02 doesn't work around it locally.
 
 ## Consequences
 
@@ -105,5 +132,6 @@ These points are unverified until 01 `v1.0.0` runs against real 02 output:
 - 02's identity numbers depend on a pinned version of 01. `docs/results.md` must name the tag.
 - 01's known limitations carry over, and 02 must report them rather than hide them:
   - same-name relatives with a missing DOB can merge;
+  - until 01 `v1.1.0`, same-name relatives with both DOBs present can merge through a DOB-less form submission (bridge records, above);
   - household members with similar first names sharing a phone can merge;
   - identity drift where a person changes both phone and email stays split.

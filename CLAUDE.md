@@ -78,10 +78,7 @@ docker-compose.yml
 - **Structural links** are done in SQL with confidence 1.0: opportunity → `crm_id`, form submission → its own `anonymous_id`.
 - **Devices.** An `anonymous_id` attaches to the profile of its form submissions when they all agree. A device whose submissions fall in two profiles stays unattached and is counted (`device_conflict`). A device never merges profiles.
 - Write `core.identity_link` (source, confidence) and `core.link_evidence`. Which 01 rules fire on these fields: ADR 0001.
-- **Open decision (must be settled before M6): which channel a form submission gets.** `form_submit` events have no referrer or UTM tags, so `staging.web_event` currently labels them `direct`. Options:
-  - form submissions are not touchpoints at all (they're conversions/person records, not marketing contacts); or
-  - a form submission inherits the channel of the device's preceding web event (its session's entry page view).
-  Record the choice and its reason here or in an ADR.
+- **Decided: form submissions are not touchpoints**, and an in-session page view with the site's own URL as referrer continues the session's channel instead of counting as `referral`. Reasons and what M4/M6 must implement: `docs/adr/0002-form-submission-channel.md`.
 - **Accept:** the `docs/acceptance.md` identity metrics — precision, completeness, safety, hard-case report — on the dev seeds, then on the held-out seeds after thresholds are frozen. CI: `stitch-eval`, `reproduce`.
 
 ### M4 — Definitions
@@ -112,7 +109,7 @@ docker-compose.yml
 - **Accept:** CI `build` passes; `perf-report` numbers recorded in `docs/results.md` (reported, not gated).
 
 ### M8 — Deploy
-- **Cloud decided here.** Leaning toward GCP: Cloud Run for the dashboard, Cloud SQL for Postgres 16, seeding as a Cloud Run Job. The alternative is AWS ECS Fargate + RDS; Fargate needs an ALB that costs money even when idle. Record the choice in `docs/adr/0002-cloud.md`.
+- **Cloud decided here.** Leaning toward GCP: Cloud Run for the dashboard, Cloud SQL for Postgres 16, seeding as a Cloud Run Job. The alternative is AWS ECS Fargate + RDS; Fargate needs an ALB that costs money even when idle. Record the choice in `docs/adr/0003-cloud.md`.
 - Terraform in `infra/terraform`; CI `terraform` job.
 - **Accept:**
   - Public URL in README.

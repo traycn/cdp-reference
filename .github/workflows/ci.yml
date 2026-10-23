@@ -78,10 +78,10 @@ jobs:
           . "$RUNNER_TEMP/helpers.sh"
           dbmate up
           schema_matches_committed
-      - name: dbmate rollback leaves nothing behind
+      - name: rolling back every migration leaves nothing behind
         run: |
           . "$RUNNER_TEMP/helpers.sh"
-          dbmate rollback
+          for _ in db/migrations/*.sql; do dbmate rollback; done
           left="$(psql_q "
             SELECT nspname FROM pg_namespace WHERE nspname IN ('raw', 'staging', 'core', 'eval')
             UNION ALL SELECT extname FROM pg_extension WHERE extname = 'uuid-ossp'
