@@ -5,8 +5,13 @@ truth. Units are CRM contacts (crm_id), form submissions (source_event_id) and
 devices (anonymous_id). A device is attachable when it has at least one form
 submission; devices without one are left out of completeness, recall and event
 attachment, since nothing can link them. Wrong attachment (events attached to a
-profile that holds none of their true person's records) is reported for every
-seed; it has no bar (cdp_stitch.device_eval).
+profile that holds none of the records of the person who produced them) is
+measured per event from eval.truth_event (cdp_stitch.device_eval).
+
+Precision has two forms (docs/acceptance.md, change log 2026-10-22): all pairs,
+reported against the original bar, and non-hazard pairs, which carry the bar.
+Non-hazard leaves out units of same_name_relative and shared_household_phone
+people, and shared devices.
 """
 
 from __future__ import annotations
@@ -24,15 +29,18 @@ from cdp_stitch.device_eval import current_attachment
 from cdp_stitch.engine import engine_info
 
 # docs/acceptance.md bars, per seed. The mean-precision bar is checked across
-# seeds in report.py.
+# seeds in report.py. Precision bars apply to non-hazard pairs; all-pairs
+# precision is reported against the same numbers.
 BAR_PRECISION = 0.98
 BAR_PRECISION_MEAN = 0.99
 BAR_COMPLETENESS = 0.80
 BAR_SAFETY = 0
 BAR_ATTACHMENT = 0.95
+BAR_WRONG_ATTACHMENT = 0.010
+BAR_SAME_NAME_BOTH_DOB_MERGED = 0
 
 COMPLETENESS_KINDS = ("ordinary", "multi_email", "multi_device")
-HAZARD_KINDS = ("same_name_relative", "shared_household_phone")
+HAZARD_KINDS = ("same_name_relative", "shared_household_phone")  # identity hazards
 DOB_GROUPS = ("both", "one", "none")
 EXAMPLES = 10
 
@@ -75,6 +83,33 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
     form_devices = {
         str(r[0]) for r in _rows(conn, "SELECT DISTINCT anonymous_id FROM staging.form_submission")
     }
+    hazard_persons = {
+        str(p)
+        for a, b in _rows(
+            conn,
+            "SELECT person_a, person_b FROM eval.truth_hazard_pair "
+            "WHERE kind IN ('same_name_relative', 'shared_household_phone')",
+        )
+        for p in (a, b)
+    }
+    shared_devices = {
+        str(d)
+        for (d,) in _rows(
+            conn,
+            """SELECT d.anonymous_id
+               FROM eval.truth_event t
+               JOIN (SELECT source_event_id, anonymous_id FROM raw.web_event
+                     UNION ALL
+                     SELECT source_event_id, anonymous_id FROM raw.ad_click
+                     WHERE anonymous_id IS NOT NULL) d USING (source_event_id)
+               GROUP BY d.anonymous_id HAVING count(DISTINCT t.person_id) > 1""",
+        )
+    }
+
+    def non_hazard(u: Unit) -> bool:
+        return truth[u][0] not in hazard_persons and not (
+            u[0] == "device" and u[1] in shared_devices
+        )
 
     def attachable(u: Unit) -> bool:
         return u[0] != "device" or u[1] in form_devices
@@ -96,11 +131,16 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         members[pid].append(u)
     pairs_in_profiles = 0
     same_person_pairs = 0
+    nh_pairs = 0
+    nh_same_person_pairs = 0
     impure: list[dict[str, Any]] = []
     for pid, us in members.items():
         by_person = Counter(truth[u][0] for u in us)
         pairs_in_profiles += comb(len(us), 2)
         same_person_pairs += sum(comb(n, 2) for n in by_person.values())
+        nh_by_person = Counter(truth[u][0] for u in us if non_hazard(u))
+        nh_pairs += comb(sum(nh_by_person.values()), 2)
+        nh_same_person_pairs += sum(comb(n, 2) for n in nh_by_person.values())
         if len(by_person) > 1:
             impure.append({"profile_id": pid, "persons": dict(sorted(by_person.items()))})
     true_pairs = sum(comb(len(us), 2) for us in units_of.values())
@@ -195,7 +235,11 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
     }
     hazard_merges: list[dict[str, Any]] = []
     hazard_outcomes: Counter[tuple[str, str, str, str]] = Counter()
-    for a, b, kind in _rows(conn, "SELECT person_a, person_b, kind FROM eval.truth_hazard_pair"):
+    for a, b, kind in _rows(
+        conn,
+        "SELECT person_a, person_b, kind FROM eval.truth_hazard_pair "
+        "WHERE kind IN ('same_name_relative', 'shared_household_phone')",
+    ):
         ca, cb = person_contact[a], person_contact[b]
         group = DOB_GROUPS[2 - (dob[ca] + dob[cb])]
         merged = bool(person_profiles[a] & person_profiles[b])
@@ -228,12 +272,19 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
                 1 for us in members.values() if sum(u[0] != "device" for u in us) > 1
             ),
             "attachable_devices": len(form_devices),
+            "shared_devices": len(shared_devices),
+            "attachable_shared_devices": len(shared_devices & form_devices),
             "attached_devices": len(attached_devices),
             "people_with_2plus_attachable_units": sum(
                 1 for us in units_of.values() if len(us) >= 2
             ),
         },
         "precision": {
+            "same_person_pairs": nh_same_person_pairs,
+            "pairs": nh_pairs,
+            "rate": _ratio(nh_same_person_pairs, nh_pairs),
+        },
+        "precision_all_pairs": {
             "same_person_pairs": same_person_pairs,
             "pairs": pairs_in_profiles,
             "rate": _ratio(same_person_pairs, pairs_in_profiles),
@@ -299,6 +350,15 @@ def failures(m: dict[str, Any]) -> list[str]:
     a = m["event_attachment"]["rate"]
     if a is None or a < BAR_ATTACHMENT:
         out.append(f"seed {seed}: event attachment {a} < {BAR_ATTACHMENT}")
+    w = m["event_attachment"]["wrong_rate"]
+    if w is None or w > BAR_WRONG_ATTACHMENT:
+        out.append(f"seed {seed}: wrong attachment {w} > {BAR_WRONG_ATTACHMENT}")
+    sn = m["hard_cases"]["same_name_relative"]["both"]["merged"]
+    if sn > BAR_SAME_NAME_BOTH_DOB_MERGED:
+        out.append(
+            f"seed {seed}: {sn} same_name_relative pair(s) with both DOBs merged, "
+            f"bar is {BAR_SAME_NAME_BOTH_DOB_MERGED}"
+        )
     return out
 
 
@@ -307,7 +367,13 @@ def format_metrics(m: dict[str, Any]) -> str:
     lines = [
         f"seed {m['seed']} · {m['engine']['name']} {m['engine']['version']}",
         f"precision     {m['precision']['rate']}  "
-        f"({m['precision']['same_person_pairs']:,}/{m['precision']['pairs']:,})",
+        f"({m['precision']['same_person_pairs']:,}/{m['precision']['pairs']:,}, non-hazard)",
+        f"  all pairs   {m['precision_all_pairs']['rate']}  "
+        f"({m['precision_all_pairs']['same_person_pairs']:,}/{m['precision_all_pairs']['pairs']:,},"
+        " report only)",
+        "same-name     merged with both DOBs "
+        f"{m['hard_cases']['same_name_relative']['both']['merged']}"
+        f"/{m['hard_cases']['same_name_relative']['both']['pairs']}",
         f"completeness  {comp['combined']['rate']}  "
         + "  ".join(f"{k}={v['rate']}" for k, v in comp["by_kind"].items()),
         f"recall        {m['recall']['rate']}",
@@ -315,7 +381,7 @@ def format_metrics(m: dict[str, Any]) -> str:
         f"attachment    {m['event_attachment']['rate']}  "
         f"({m['event_attachment']['attached']:,}/{m['event_attachment']['events']:,})",
         f"wrong attach  {m['event_attachment']['wrong_rate']}  "
-        f"({m['event_attachment']['wrong']:,}/{m['event_attachment']['attached']:,}, report only)",
+        f"({m['event_attachment']['wrong']:,}/{m['event_attachment']['attached']:,})",
         f"device conflicts {m['device_conflicts']:,}",
         "REVIEW        "
         + ", ".join(f"{r}={n}" for r, n in m["decisions"].get("REVIEW", {}).items()),

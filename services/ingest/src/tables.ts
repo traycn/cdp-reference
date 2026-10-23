@@ -5,7 +5,7 @@
  */
 
 export type PersonKind = "ordinary" | "multi_email" | "multi_device" | "email_changed";
-export type HazardKind = "same_name_relative" | "shared_household_phone";
+export type HazardKind = "same_name_relative" | "shared_household_phone" | "shared_device";
 export type UnitType = "crm_contact" | "form_submission" | "device";
 
 export interface CrmContactRow {
@@ -74,6 +74,13 @@ export interface TruthHazardPairRow {
   kind: HazardKind;
 }
 
+/** The person who produced a web event or a tracked ad click (one with an anonymous_id). */
+export interface TruthEventRow {
+  source_table: "web_event" | "ad_click";
+  source_event_id: string;
+  person_id: string;
+}
+
 export interface Tables {
   crm_contact: CrmContactRow[];
   crm_opportunity: CrmOpportunityRow[];
@@ -81,6 +88,7 @@ export interface Tables {
   ad_click: AdClickRow[];
   truth_record: TruthRecordRow[];
   truth_hazard_pair: TruthHazardPairRow[];
+  truth_event: TruthEventRow[];
 }
 
 export interface TableSpec<K extends keyof Tables = keyof Tables> {
@@ -183,6 +191,14 @@ export const TABLE_SPECS = [
     file: "eval/truth_hazard_pair.csv",
     columns: ["person_a", "person_b", "kind"],
     primaryKey: ["person_a", "person_b"],
+    loadMetadata: false,
+  }),
+  spec({
+    key: "truth_event",
+    table: "eval.truth_event",
+    file: "eval/truth_event.csv",
+    columns: ["source_table", "source_event_id", "person_id"],
+    primaryKey: ["source_table", "source_event_id"],
     loadMetadata: false,
   }),
 ] as const;

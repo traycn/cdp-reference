@@ -1,6 +1,8 @@
 /**
  * Synthetic feed generator: people → CRM contacts and opportunities, devices →
  * web sessions, ad clicks and form fills, plus ground truth (docs/acceptance.md).
+ * In a shared_device pair, the second person also borrows the first person's
+ * device for some sessions; eval.truth_event records who produced each event.
  *
  * Pure: the output depends only on the options. All randomness comes from one
  * seeded Rng and every timestamp lies in a fixed window, so the same options
@@ -15,6 +17,7 @@ import type {
   PersonKind,
   Tables,
   TruthHazardPairRow,
+  TruthEventRow,
   TruthRecordRow,
   WebEventRow,
 } from "./tables.ts";
@@ -48,7 +51,7 @@ export interface GenerateOptions {
 }
 
 /** Bump when a change to the generator is meant to change its output. */
-export const GENERATOR_VERSION = 1;
+export const GENERATOR_VERSION = 2;
 
 const DAY = 86_400_000;
 const WINDOW_START = Date.UTC(2025, 0, 1);
@@ -58,6 +61,7 @@ const WINDOW_END = Date.UTC(2026, 6, 1);
 const MIX = {
   sameNamePairs: 0.015,
   householdPairs: 0.015,
+  sharedDevicePairs: 0.03,
   emailChanged: 0.03,
   multiEmail: 0.06,
   multiDevice: 0.15,
@@ -84,6 +88,7 @@ const P_SAME_NAME_SHARES_PHONE = 0.6;
 const P_HOUSEHOLD_SAME_LAST = 0.8;
 const P_SESSION_STOP = 0.178; // sessions per device: 1 + geometric, mean ≈ 5.6
 const P_PAGE_STOP = 0.3125; // page views per session: 1 + geometric, mean 3.2
+const P_BORROWED_SESSION_STOP = 0.35; // borrowed sessions on a shared device: 1 + geometric, mean ≈ 2.9
 const P_UNTAGGED_CLICK = 0.05;
 const P_UNTRACKED_CLICK = 0.25; // extra click with no anonymous_id per tracked click
 const P_OPPORTUNITY = 0.25;
@@ -149,6 +154,10 @@ interface Session {
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
+/** Hazards that make two people look alike on identity fields; each has one CRM contact. */
+const isIdentityHazard = (h: Hazard | null): h is Hazard =>
+  h !== null && h.kind !== "shared_device";
+
 export function generate(opts: GenerateOptions): Tables {
   if (!Number.isInteger(opts.seed) || opts.seed < 0)
     throw new Error("seed must be a non-negative integer");
@@ -172,6 +181,10 @@ class Generator {
   private readonly forms = new Map<Person, WebEventRow[]>();
   private readonly devices = new Map<Person, string[]>();
   private readonly personContacts = new Map<Person, CrmContactRow[]>();
+  /** shared_device role b → role a, whose device b borrows. */
+  private readonly lender = new Map<Person, Person>();
+  /** The person who produced each web event and ad click. */
+  private readonly producer = new Map<WebEventRow | AdClickRow, Person>();
 
   private readonly opts: GenerateOptions;
 
@@ -182,7 +195,9 @@ class Generator {
 
   run(): Tables {
     this.createPeople();
-    for (const p of this.people) this.createActivity(p);
+    // Lenders first, so a borrower's sessions can use the lender's device.
+    for (const p of this.people) if (!this.lender.has(p)) this.createActivity(p);
+    for (const p of this.people) if (this.lender.has(p)) this.createActivity(p);
     this.assignDob();
     this.assignIds();
     return {
@@ -221,6 +236,10 @@ class Generator {
         intended: "ordinary",
         hazard: { kind: "shared_household_phone", pair: i, role: "b" },
       });
+    }
+    for (let i = 0; i < Math.round(n * MIX.sharedDevicePairs); i++) {
+      slots.push({ intended: "ordinary", hazard: { kind: "shared_device", pair: i, role: "a" } });
+      slots.push({ intended: "ordinary", hazard: { kind: "shared_device", pair: i, role: "b" } });
     }
     const add = (kind: PersonKind, count: number): void => {
       for (let i = 0; i < count; i++) slots.push({ intended: kind, hazard: null });
@@ -268,7 +287,7 @@ class Generator {
       title: rng.pick(TITLES),
       address: this.address(),
       birth: this.birthDate(1955, 2003),
-      inCrm: hazard !== null || rng.bool(P_IN_CRM[intended]),
+      inCrm: isIdentityHazard(hazard) || rng.bool(P_IN_CRM[intended]),
       deviceCount: 0,
       formCount: 0,
       firstSeen: WINDOW_START + rng.int(0, (WINDOW_END - WINDOW_START - 90 * DAY) / DAY) * DAY,
@@ -304,13 +323,19 @@ class Generator {
         b.emails = [a.emails[0]!];
       }
     } else {
-      // Household: different first name, same phone, own email.
+      // Household: different first name, own email. shared_household_phone shares
+      // the phone; shared_device has its own phone and shares a's device instead.
       while (canonicalFirst(b.first) === canonicalFirst(a.first)) b.first = rng.pick(FIRST_NAMES);
       if (!rng.bool(P_HOUSEHOLD_SAME_LAST)) {
         do b.last = rng.pick(LAST_NAMES);
         while (b.last === a.last);
       }
-      b.phone = a.phone;
+      if (b.hazard!.kind === "shared_device") {
+        b.phone = this.uniquePhone();
+        this.lender.set(b, a);
+      } else {
+        b.phone = a.phone;
+      }
       b.emails = [this.uniqueEmail(b.first, b.last, rng.bool(0.5) ? b.company : null)];
     }
     this.setActivityCounts(b);
@@ -348,15 +373,17 @@ class Generator {
       const anonymousId = rng.uuid();
       deviceIds.push(anonymousId);
       const count = 1 + rng.geometric(P_SESSION_STOP);
-      const starts: number[] = [];
-      for (let s = 0; s < count; s++)
-        starts.push(
-          p.firstSeen + rng.int(0, Math.floor((WINDOW_END - DAY - p.firstSeen) / 1000)) * 1000,
-        );
-      starts.sort((x, y) => x - y);
-      for (const start of starts) sessions.push(this.session(anonymousId, start));
+      for (const start of this.sessionStarts(p, count))
+        sessions.push(this.session(p, anonymousId, start));
     }
     this.devices.set(p, deviceIds);
+    const lender = this.lender.get(p);
+    if (lender) {
+      const borrowed = this.devices.get(lender)![0]!;
+      const count = 1 + rng.geometric(P_BORROWED_SESSION_STOP);
+      for (const start of this.sessionStarts(p, count))
+        sessions.push(this.session(p, borrowed, start));
+    }
 
     // Form fills go at the end of a random session, after its last page view.
     const forms: WebEventRow[] = [];
@@ -367,6 +394,7 @@ class Generator {
       const email = this.formEmail(p, f);
       const form = this.formSubmit(p, last.anonymous_id, at, email, last.properties.session_id!);
       session.events.push(form);
+      this.producer.set(form, p);
       forms.push(form);
     }
     this.forms.set(p, forms);
@@ -375,7 +403,16 @@ class Generator {
     if (p.inCrm) this.createCrm(p, forms);
   }
 
-  private session(anonymousId: string, start: number): Session {
+  private sessionStarts(p: Person, count: number): number[] {
+    const starts: number[] = [];
+    for (let s = 0; s < count; s++)
+      starts.push(
+        p.firstSeen + this.rng.int(0, Math.floor((WINDOW_END - DAY - p.firstSeen) / 1000)) * 1000,
+      );
+    return starts.sort((x, y) => x - y);
+  }
+
+  private session(p: Person, anonymousId: string, start: number): Session {
     const rng = this.rng;
     const sessionId = `s_${rng.hex(16)}`;
     const channel = rng.weighted(ENTRY_CHANNEL);
@@ -389,7 +426,9 @@ class Generator {
       );
       const campaign = rng.pick(pool);
       const tagged = !rng.bool(P_UNTAGGED_CLICK);
-      this.clicks.push(this.click(campaign, start - rng.int(1, 20) * 1000, anonymousId, tagged));
+      const click = this.click(campaign, start - rng.int(1, 20) * 1000, anonymousId, tagged);
+      this.clicks.push(click);
+      this.producer.set(click, p);
       if (tagged) utm = [campaign.utmSource, campaign.utmMedium, campaign.name];
       landing = rng.pick(["/", "/features", "/pricing", "/demo"]);
       if (rng.bool(P_UNTRACKED_CLICK)) {
@@ -429,6 +468,7 @@ class Generator {
       at += rng.int(10, 180) * 1000;
       path = rng.pick(PAGES);
     }
+    for (const e of events) this.producer.set(e, p);
     return { start, events };
   }
 
@@ -515,7 +555,7 @@ class Generator {
     const emails = p.intended === "email_changed" ? [p.emails[0]!, p.emails[1]!] : [p.emails[0]!];
     for (const [i, email] of emails.entries()) {
       if (i > 0) created = Math.min(created + rng.int(60, 300) * DAY, latest);
-      const mustHavePhone = p.hazard !== null || p.intended === "email_changed";
+      const mustHavePhone = isIdentityHazard(p.hazard) || p.intended === "email_changed";
       const row: CrmContactRow = {
         crm_id: "",
         email: this.emailNoise(email),
@@ -578,11 +618,12 @@ class Generator {
     const rate = this.opts.dobRate;
     let remaining = Math.round(rate * this.contacts.length);
     const hazardContacts = new Map<Person, CrmContactRow>();
-    for (const c of this.contacts) if (c.person.hazard) hazardContacts.set(c.person, c.row);
+    for (const c of this.contacts)
+      if (isIdentityHazard(c.person.hazard)) hazardContacts.set(c.person, c.row);
 
     const pairs = new Map<string, Person[]>();
     for (const p of this.people) {
-      if (!p.hazard) continue;
+      if (!isIdentityHazard(p.hazard)) continue;
       const key = `${p.hazard.kind}:${String(p.hazard.pair).padStart(6, "0")}`;
       pairs.set(key, [...(pairs.get(key) ?? []), p]);
     }
@@ -601,7 +642,7 @@ class Generator {
         }
       }
     }
-    const others = this.contacts.filter((c) => !c.person.hazard);
+    const others = this.contacts.filter((c) => !isIdentityHazard(c.person.hazard));
     rng.shuffle(others);
     for (const c of others.slice(0, Math.max(0, remaining))) c.row.dob = c.person.birth;
   }
@@ -632,7 +673,7 @@ class Generator {
     this.clicks.forEach((c, i) => (c.source_event_id = `A${String(i + 1).padStart(7, "0")}`));
   }
 
-  private groundTruth(): Pick<Tables, "truth_record" | "truth_hazard_pair"> {
+  private groundTruth(): Pick<Tables, "truth_record" | "truth_hazard_pair" | "truth_event"> {
     const records: TruthRecordRow[] = [];
     const pairs = new Map<string, string[]>();
     for (const p of this.people) {
@@ -665,7 +706,7 @@ class Generator {
       for (const d of devices)
         records.push({ unit_type: "device", unit_key: d, person_id: p.id, person_kind: kind });
       if (p.hazard) {
-        if (contacts.length !== 1)
+        if (isIdentityHazard(p.hazard) && contacts.length !== 1)
           throw new Error(`${p.id}: hazard person must have exactly one CRM contact`);
         const key = `${p.hazard.kind}:${p.hazard.pair}`;
         pairs.set(key, [...(pairs.get(key) ?? []), p.id]);
@@ -683,7 +724,25 @@ class Generator {
       return { person_a: x, person_b: y, kind: key.split(":")[0] as HazardKind };
     });
     hazards.sort((a, b) => cmp(a.person_a, b.person_a));
-    return { truth_record: records, truth_hazard_pair: hazards };
+
+    // IDs follow time order per table, so the rows are already sorted by source_event_id.
+    const events: TruthEventRow[] = [];
+    for (const [table, rows] of [
+      ["ad_click", this.clicks],
+      ["web_event", this.events],
+    ] as const) {
+      for (const row of rows) {
+        if (row.anonymous_id === null) continue;
+        const person = this.producer.get(row);
+        if (!person) throw new Error(`${row.source_event_id} has no producer`);
+        events.push({
+          source_table: table,
+          source_event_id: row.source_event_id,
+          person_id: person.id,
+        });
+      }
+    }
+    return { truth_record: records, truth_hazard_pair: hazards, truth_event: events };
   }
 
   // -- identifiers ----------------------------------------------------------

@@ -219,6 +219,18 @@ ALTER SEQUENCE core.touchpoint_touchpoint_id_seq OWNED BY core.touchpoint.touchp
 
 
 --
+-- Name: truth_event; Type: TABLE; Schema: eval; Owner: -
+--
+
+CREATE TABLE eval.truth_event (
+    source_table text NOT NULL,
+    source_event_id text NOT NULL,
+    person_id text NOT NULL,
+    CONSTRAINT truth_event_source_table_check CHECK ((source_table = ANY (ARRAY['web_event'::text, 'ad_click'::text])))
+);
+
+
+--
 -- Name: truth_hazard_pair; Type: TABLE; Schema: eval; Owner: -
 --
 
@@ -227,7 +239,7 @@ CREATE TABLE eval.truth_hazard_pair (
     person_b text NOT NULL,
     kind text NOT NULL,
     CONSTRAINT truth_hazard_pair_check CHECK ((person_a < (person_b COLLATE "C"))),
-    CONSTRAINT truth_hazard_pair_kind_check CHECK ((kind = ANY (ARRAY['same_name_relative'::text, 'shared_household_phone'::text])))
+    CONSTRAINT truth_hazard_pair_kind_check CHECK ((kind = ANY (ARRAY['same_name_relative'::text, 'shared_household_phone'::text, 'shared_device'::text])))
 );
 
 
@@ -518,6 +530,14 @@ ALTER TABLE ONLY core.touchpoint
 
 
 --
+-- Name: truth_event truth_event_pkey; Type: CONSTRAINT; Schema: eval; Owner: -
+--
+
+ALTER TABLE ONLY eval.truth_event
+    ADD CONSTRAINT truth_event_pkey PRIMARY KEY (source_table, source_event_id);
+
+
+--
 -- Name: truth_hazard_pair truth_hazard_pair_pkey; Type: CONSTRAINT; Schema: eval; Owner: -
 --
 
@@ -623,6 +643,13 @@ CREATE INDEX touchpoint_profile_id_occurred_at_idx ON core.touchpoint USING btre
 
 
 --
+-- Name: truth_event_person_id_idx; Type: INDEX; Schema: eval; Owner: -
+--
+
+CREATE INDEX truth_event_person_id_idx ON eval.truth_event USING btree (person_id);
+
+
+--
 -- Name: truth_record_person_id_idx; Type: INDEX; Schema: eval; Owner: -
 --
 
@@ -695,4 +722,5 @@ ALTER TABLE ONLY core.touchpoint
 
 INSERT INTO public.schema_migrations (version) VALUES
     ('001'),
-    ('002');
+    ('002'),
+    ('003');

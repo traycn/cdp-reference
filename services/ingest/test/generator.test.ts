@@ -144,8 +144,9 @@ describe("ground truth", () => {
       expect(own).toHaveLength(1);
       return contacts.get(own[0]!.key)!;
     };
-    expect(tables.truth_hazard_pair).toHaveLength(2 * Math.round(small.people * 0.015));
-    for (const h of tables.truth_hazard_pair) {
+    const identity = tables.truth_hazard_pair.filter((h) => h.kind !== "shared_device");
+    expect(identity).toHaveLength(2 * Math.round(small.people * 0.015));
+    for (const h of identity) {
       expect(h.person_a < h.person_b).toBe(true);
       const [a, b] = [contactOf(h.person_a), contactOf(h.person_b)];
       if (h.kind === "same_name_relative") {
@@ -162,7 +163,76 @@ describe("ground truth", () => {
     }
   });
 
-  it("covers all three DOB groups for both hazard kinds", () => {
+  it("lends one device per shared_device pair to a household member with their own identifiers", () => {
+    const pairs = tables.truth_hazard_pair.filter((h) => h.kind === "shared_device");
+    expect(pairs).toHaveLength(Math.round(small.people * 0.03));
+    const deviceOwner = new Map(
+      tables.truth_record
+        .filter((r) => r.unit_type === "device")
+        .map((r) => [r.unit_key, r.person_id]),
+    );
+    const eventDevice = new Map(tables.web_event.map((e) => [e.source_event_id, e.anonymous_id]));
+    const usersOf = new Map<string, Set<string>>();
+    for (const r of tables.truth_event) {
+      if (r.source_table !== "web_event") continue;
+      const d = eventDevice.get(r.source_event_id)!;
+      usersOf.set(d, (usersOf.get(d) ?? new Set()).add(r.person_id));
+    }
+    const shared = [...usersOf].filter(([, users]) => users.size > 1);
+    expect(shared).toHaveLength(pairs.length);
+    const pairKeys = new Set(pairs.map((h) => `${h.person_a}|${h.person_b}`));
+    for (const [device, users] of shared) {
+      expect(users.size).toBe(2);
+      expect(pairKeys.has([...users].sort().join("|"))).toBe(true);
+      expect(users.has(deviceOwner.get(device)!)).toBe(true);
+    }
+    // The pair never shares an email or a phone on any contact or form.
+    for (const h of pairs) {
+      const ids = (person: string) => {
+        const out = new Set<string>();
+        for (const u of units.get(person)!) {
+          const c = u.type === "crm_contact" ? contacts.get(u.key) : undefined;
+          const f = u.type === "form_submission" ? forms.get(u.key) : undefined;
+          for (const v of [
+            normEmail(c?.email ?? f?.email ?? null),
+            normPhone(c?.phone ?? f?.properties.phone),
+          ])
+            if (v) out.add(v);
+        }
+        return out;
+      };
+      const b = ids(h.person_b);
+      for (const v of ids(h.person_a)) expect(b.has(v)).toBe(false);
+    }
+  });
+
+  it("names the producer of every web event and tracked ad click", () => {
+    const tracked =
+      tables.web_event.length + tables.ad_click.filter((c) => c.anonymous_id !== null).length;
+    expect(tables.truth_event).toHaveLength(tracked);
+    const owner = new Map(
+      tables.truth_record
+        .filter((r) => r.unit_type === "device")
+        .map((r) => [r.unit_key, r.person_id]),
+    );
+    const formPerson = new Map(
+      tables.truth_record
+        .filter((r) => r.unit_type === "form_submission")
+        .map((r) => [r.unit_key, r.person_id]),
+    );
+    const events = new Map(tables.web_event.map((e) => [e.source_event_id, e]));
+    let borrowed = 0;
+    for (const r of tables.truth_event) {
+      if (r.source_table !== "web_event") continue;
+      const e = events.get(r.source_event_id)!;
+      if (e.event_name === "form_submit")
+        expect(r.person_id).toBe(formPerson.get(e.source_event_id));
+      if (r.person_id !== owner.get(e.anonymous_id)) borrowed++;
+    }
+    expect(borrowed).toBeGreaterThan(0);
+  });
+
+  it("covers all three DOB groups for both identity hazard kinds", () => {
     const g = countTables(tables).hazard_dob_groups;
     for (const kind of ["same_name_relative", "shared_household_phone"] as const) {
       expect(g[kind].both).toBeGreaterThan(0);

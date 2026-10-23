@@ -15,7 +15,14 @@ import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import pg from "pg";
 import { from as copyFrom } from "pg-copy-streams";
-import { checkCounts, type Check, type Counts, HAZARD_KINDS, PERSON_KINDS } from "./counts.ts";
+import {
+  checkCounts,
+  type Check,
+  type Counts,
+  HAZARD_KINDS,
+  IDENTITY_HAZARD_KINDS,
+  PERSON_KINDS,
+} from "./counts.ts";
 import { readManifest } from "./dataset.ts";
 import { TABLE_SPECS } from "./tables.ts";
 
@@ -131,7 +138,7 @@ export async function countDatabase(client: pg.Client): Promise<Counts> {
 
   const hazardPairs = Object.fromEntries(HAZARD_KINDS.map((k) => [k, 0])) as Counts["hazard_pairs"];
   const groups = Object.fromEntries(
-    HAZARD_KINDS.map((k) => [k, { both: 0, one: 0, none: 0 }]),
+    IDENTITY_HAZARD_KINDS.map((k) => [k, { both: 0, one: 0, none: 0 }]),
   ) as Counts["hazard_dob_groups"];
   const hazardRows = await client.query<{ kind: keyof Counts["hazard_pairs"]; n_dob: number }>(
     `WITH person_dob AS (
@@ -145,6 +152,7 @@ export async function countDatabase(client: pg.Client): Promise<Counts> {
   );
   for (const r of hazardRows.rows) {
     hazardPairs[r.kind]++;
+    if (r.kind === "shared_device") continue;
     groups[r.kind][r.n_dob === 2 ? "both" : r.n_dob === 1 ? "one" : "none"]++;
   }
 
@@ -155,6 +163,10 @@ export async function countDatabase(client: pg.Client): Promise<Counts> {
     crm_opportunity: await one(`SELECT count(*) AS n FROM raw.crm_opportunity`),
     web_event: await one(`SELECT count(*) AS n FROM raw.web_event`),
     ad_click: await one(`SELECT count(*) AS n FROM raw.ad_click`),
+    tracked_events: await one(
+      `SELECT (SELECT count(*) FROM raw.web_event)
+            + (SELECT count(*) FROM raw.ad_click WHERE anonymous_id IS NOT NULL) AS n`,
+    ),
     form_submission: await one(
       `SELECT count(*) AS n FROM raw.web_event WHERE event_name = 'form_submit'`,
     ),
@@ -166,6 +178,17 @@ export async function countDatabase(client: pg.Client): Promise<Counts> {
     truth_crm_contact: await units("crm_contact"),
     truth_form_submission: await units("form_submission"),
     truth_device: await units("device"),
+    truth_event: await one(`SELECT count(*) AS n FROM eval.truth_event`),
+    shared_devices: await one(
+      `SELECT count(*) AS n FROM (
+         SELECT d.anonymous_id FROM eval.truth_event t
+         JOIN (SELECT 'web_event' AS source_table, source_event_id, anonymous_id FROM raw.web_event
+               UNION ALL
+               SELECT 'ad_click', source_event_id, anonymous_id FROM raw.ad_click
+               WHERE anonymous_id IS NOT NULL) d
+           USING (source_table, source_event_id)
+         GROUP BY d.anonymous_id HAVING count(DISTINCT t.person_id) > 1) s`,
+    ),
     persons: await one(`SELECT count(DISTINCT person_id) AS n FROM eval.truth_record`),
     kinds,
     hazard_pairs: hazardPairs,

@@ -22,7 +22,8 @@ The generator writes ground truth into the `eval` schema. The app and the dashbo
 - `eval.truth_record(unit_type, unit_key, person_id, person_kind)`, one row per **unit**:
   - `unit_type ∈ {crm_contact, form_submission, device}`.
   - `unit_key` is the `crm_id`, the form event's `source_event_id`, or the `anonymous_id`.
-  - Each unit belongs to exactly one person. Shared devices are not modelled; this is a stated limitation.
+  - Each unit belongs to exactly one person. A shared device (below) belongs to its **owner**, the person whose device it is; the other person only borrows it.
+- `eval.truth_event(source_table, source_event_id, person_id)`, one row per web event and per ad click with an `anonymous_id`: the person who produced it. On a device that isn't shared, this is the device's person. Added 2026-10-22 for wrong attachment.
 - `person_kind`:
   - `ordinary`: one email, one or more devices.
   - `multi_email`: form fills under two or more emails.
@@ -33,8 +34,9 @@ The generator writes ground truth into the `eval` schema. The app and the dashbo
 - `eval.truth_hazard_pair(person_a, person_b, kind)`: two **different** people who look alike.
   - `same_name_relative`: same first and last name, sharing a phone or email (Jr./Sr.).
   - `shared_household_phone`: different first names, same phone.
+  - `shared_device` (added 2026-10-22): two people in the same household (same address, different first names, each with their own email and phone). The second person also uses the first person's device for some sessions, and may fill forms on it. About 2–3% of devices are shared.
 
-  Each person in a hazard pair has exactly one CRM contact, so DOB presence is defined per pair: **both present**, **one missing**, or **both missing**.
+  Each person in a `same_name_relative` or `shared_household_phone` pair has exactly one CRM contact, so DOB presence is defined per pair: **both present**, **one missing**, or **both missing**. `shared_device` people are CRM contacts or not like anyone else; DOB groups don't apply to them.
 
 **Attachable** units: CRM contacts, form submissions, and devices with at least one form submission. A device with no form fill can't be linked to anyone, so it is excluded from completeness and attachment rates.
 
@@ -44,11 +46,15 @@ A unit's profile comes from `core.identity_link`. "Same profile" means the same 
 
 | Metric | Definition | Bar |
 |---|---|---|
-| **Pairwise precision** | Pairs of units in the same profile that belong to the same person ÷ all pairs of units in the same profile | **≥ 0.98 on every seed** and **≥ 0.99 mean** over the seeds reported |
+| **Pairwise precision, non-hazard** (changed 2026-10-22) | Pairwise precision over pairs of units in the same profile where neither unit belongs to a person in a `same_name_relative` or `shared_household_phone` pair, and neither unit is a shared device | **≥ 0.98 on every seed** and **≥ 0.99 mean** over the seeds reported |
+| Pairwise precision, all pairs | Pairs of units in the same profile that belong to the same person ÷ all pairs of units in the same profile. A shared device counts as its owner's unit | Report only. `docs/results.md` reports it against the original bar (≥ 0.98 per seed, ≥ 0.99 mean), so the original miss stays visible |
+| **Same-name relatives, both DOBs present** (added 2026-10-22) | `same_name_relative` pairs with both DOBs present that are merged (hard-case report) | **0 on every seed** |
+| Same-name relatives, a DOB missing | `same_name_relative` pairs with one or both DOBs missing that are merged | Report only: a known limit of 01 (ADR 0001) |
 | **Person completeness** | People with ≥ 2 attachable units whose attachable units all share one profile ÷ people with ≥ 2 attachable units. Computed for `ordinary`, `multi_email` and `multi_device` people; `email_changed` is reported separately | **≥ 0.80 on every seed** |
 | Pairwise recall | Pairs of units in the same profile that belong to the same person ÷ all pairs of units that belong to the same person | Report only |
 | **Safety** | Profiles holding two CRM contacts whose emails both exist and differ **and** whose phones both exist and differ (01's conflict rule) | **0 on every seed** |
 | **Event attachment** | Web and ad events attached to a profile ÷ events whose device is attachable | **≥ 0.95 on every seed** |
+| **Wrong attachment** (added 2026-10-22) | Attached events whose profile holds none of the event's true person's person records (CRM contacts, form submissions) ÷ attached events. The true person comes from `eval.truth_event` | **≤ 0.010 on every seed** |
 | Device conflicts | Devices left unattached because their form submissions fell in different profiles | Report only |
 | REVIEW queue | Pairs 01 sent to REVIEW, by rule | Report only |
 
@@ -59,7 +65,7 @@ Report only, per seed. A merge of a hazard pair is never counted as a win.
 | Seed | Kind | Pairs | Merged, DOB both present | Merged, DOB one missing | Merged, DOB both missing |
 |---|---|---:|---:|---:|---:|
 
-"Merged" means any unit of `person_a` shares a profile with any unit of `person_b`. Each cell shows `merged / pairs in that DOB group`. Wrong merges from hazard pairs also count against pairwise precision.
+"Merged" means any unit of `person_a` shares a profile with any unit of `person_b`. Each cell shows `merged / pairs in that DOB group`. Wrong merges from hazard pairs count against all-pairs precision, not against non-hazard precision.
 
 `email_changed` people get their own line: completeness and the 01 rule that joined or split them.
 
@@ -87,7 +93,10 @@ Written down on 2026-10-21, before the generator existed, from its design parame
 | Distinct `person_id` in `eval.truth_record` | Exactly 10,000 (every person has at least one unit) |
 | People by kind | `ordinary` 7,300–7,900 · `multi_email` 500–700 · `multi_device` 1,300–1,700 · `email_changed` 250–350 |
 | `eval.truth_hazard_pair` | `same_name_relative` exactly 150 · `shared_household_phone` exactly 150 |
-| Hazard pairs per DOB group (both present / one missing / both missing), per kind | ≥ 40 each when `0 < --dob-rate < 1` |
+| Hazard pairs per DOB group (both present / one missing / both missing), for `same_name_relative` and `shared_household_phone` | ≥ 40 each when `0 < --dob-rate < 1` |
+| `eval.truth_hazard_pair`, `shared_device` (added 2026-10-22) | Exactly 300 (one shared device per pair) |
+| Shared devices (devices with events from two people in `eval.truth_event`; added 2026-10-22) | Equal to the `shared_device` pair count, and 2–3% of `eval.truth_record` devices |
+| `eval.truth_event` (added 2026-10-22) | Equal to `raw.web_event` plus `raw.ad_click` rows with an `anonymous_id` |
 
 ## Definitions and models
 
@@ -116,3 +125,5 @@ Written down on 2026-10-21, before the generator existed, from its design parame
 | 2026-10-20 | Initial version | — | None (no data existed) |
 | 2026-10-21 | `person_kind`: `ordinary` is the fallback when no other kind applies | Read literally, "one email, one or more devices" plus first-wins made almost no one `multi_device` | None (no generator existed) |
 | 2026-10-21 | Added [ground-truth and form counts](#ground-truth-and-form-counts) | M2 needs a range for every table it writes, not only the four raw tables | None (no generator existed) |
+| 2026-10-22 | Pairwise precision bar (≥ 0.98 per seed, ≥ 0.99 mean) now applies to **non-hazard pairs**: pairs where neither unit belongs to a `same_name_relative` or `shared_household_phone` person. New bar: **0** `same_name_relative` pairs merged when both DOBs are present. Same-name merges with a DOB missing become a reported known limit. All-pairs precision is still reported in `docs/results.md`, against the original bar, so the original miss stays visible. | Cause of the miss: on each dev seed, 100 `same_name_relative` pairs have a DOB missing and are indistinguishable on every identity field 01 uses, so 01 merges them. Bridge records (ADR 0001) merge most pairs with both DOBs present too; the fix is decided for 01 `v1.1.0`, which is not tagged yet (02 pins `v1.0.0`). Company and title separate these pairs only as a generator artifact, since they never vary within a person, so they are deliberately not used as identity evidence. | All-pairs pairwise precision 0.9550 / 0.9544 / 0.9561 (seeds 42 / 7 / 1234), 01 `v1.0.0` |
+| 2026-10-22 | New hazard kind `shared_device`: about 2–3% of devices are used by two people in the same household. New ground truth `eval.truth_event` (true person per event). New bar: **wrong attachment ≤ 1.0%** of attached events per seed. The event attachment bar stays ≥ 0.95. Shared devices are left out of non-hazard precision, since a shared device belongs to two people and its attachment is measured by wrong attachment. Written before the generator models shared devices. | Without shared devices every form fill on a device belongs to the device's person, so wrong attachment was 0 by construction under every device rule and couldn't tell the rules apart. | Without shared devices, event attachment (unanimous / majority / nearest): 0.9404 / 0.9672 / 1.0000 (seed 42), 0.9415 / 0.9700 / 1.0000 (seed 7), 0.9453 / 0.9660 / 1.0000 (seed 1234); wrong attachment 0 for every rule and seed |

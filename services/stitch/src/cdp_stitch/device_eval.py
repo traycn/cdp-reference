@@ -4,8 +4,11 @@ attachment        events attached to a profile ÷ events whose device is attacha
                   (has at least one form submission); docs/acceptance.md.
 wrong attachment  attached events whose profile holds none of the event's true
                   person's person records (CRM contacts, form submissions) ÷
-                  attached events. The true person is the device's, from
-                  eval.truth_record. Read by evaluation only, never by the pipeline.
+                  attached events. The true person is the one who produced the
+                  event (eval.truth_event), which on a shared device may not be
+                  the device's owner. Read by evaluation only, never by the pipeline.
+fragment          attached events of a person with a CRM contact, on a profile
+                  without that contact (report only).
 """
 
 from __future__ import annotations
@@ -45,13 +48,12 @@ def read_events(conn: Conn, devices: set[str]) -> list[Event]:
 
 
 class Truth:
-    """The true person of each device and the persons whose records each profile holds."""
+    """The true person of each event and the persons whose records each profile holds."""
 
     def __init__(self, conn: Conn) -> None:
-        self.device_person: dict[str, str] = dict(
-            conn.execute(
-                "SELECT unit_key, person_id FROM eval.truth_record WHERE unit_type = 'device'"
-            ).fetchall()
+        # source_event_ids are unique across tables (W… for web events, A… for ad clicks).
+        self.event_person: dict[str, str] = dict(
+            conn.execute("SELECT source_event_id, person_id FROM eval.truth_event").fetchall()
         )
         self.profile_persons: dict[str, set[str]] = defaultdict(set)
         self.profile_crm_persons: dict[str, set[str]] = defaultdict(set)
@@ -80,7 +82,7 @@ def attachment_metrics(
         if pid is None:
             continue
         attached += 1
-        person = truth.device_person[e.device]
+        person = truth.event_person[e.event_id]
         wrong += person not in truth.profile_persons[pid]
         fragment += person in truth.crm_persons and person not in truth.profile_crm_persons[pid]
     return {
