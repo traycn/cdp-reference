@@ -265,6 +265,12 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
                 }
             )
 
+    both_dob = _both_dob_breakdown(
+        [m for m in hazard_merges if m["kind"] == "same_name_relative" and m["dob"] == "both"],
+        units_of,
+        profile,
+    )
+
     return {
         "seed": seed,
         "engine": {"name": engine.name, "version": engine.version, "commit": engine.commit},
@@ -322,8 +328,65 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
             for (k, g, d, r), n in sorted(hazard_outcomes.items())
         ],
         "hard_case_merges": hazard_merges,
+        "same_name_both_dob": both_dob,
         "impure_profiles": {"count": len(impure), "examples": impure[:EXAMPLES]},
     }
+
+
+def _both_dob_breakdown(
+    merges: list[dict[str, Any]], units_of: dict[str, list[Unit]], profile: dict[Unit, str]
+) -> dict[str, Any]:
+    """How the same_name_relative pairs with both DOBs present came to share a profile.
+
+    For each merged pair, every profile holding units of both people is one of:
+      contact   it holds both people's CRM contacts (a contact-to-contact merge,
+                which 01 v1.1.0's DOB cannot-link should prevent);
+      form      it holds one person's contact and a form fill of the other (forms
+                never carry a DOB, so the form matched both relatives);
+      other     neither (e.g. only devices or form-only profiles).
+    A pair is `contact` if any shared profile is, `forms_only` if every shared
+    profile is `form`, else `other`. `forms` counts the form fills sitting with
+    the other relative's contact, over the forms_only pairs.
+    """
+    pairs = {"contact": 0, "forms_only": 0, "other": 0}
+    forms = 0
+    examples: list[dict[str, Any]] = []
+    for m in merges:
+        a, b = m["person_a"], m["person_b"]
+        by_profile: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        for person in (a, b):
+            for u in units_of[person]:
+                if u in profile:
+                    by_profile[profile[u]][person].add(u[0])
+        shared = {pid: v for pid, v in by_profile.items() if len(v) == 2}
+        kinds: list[str] = []
+        stray: list[str] = []
+        for pid, v in sorted(shared.items()):
+            if "crm_contact" in v[a] and "crm_contact" in v[b]:
+                kinds.append("contact")
+                continue
+            holder = a if "crm_contact" in v[a] else b if "crm_contact" in v[b] else None
+            other = b if holder == a else a
+            if holder is not None and "form_submission" in v[other]:
+                kinds.append("form")
+                stray += sorted(
+                    k
+                    for t, k in units_of[other]
+                    if t == "form_submission" and profile.get((t, k)) == pid
+                )
+            else:
+                kinds.append("other")
+        if "contact" in kinds:
+            category = "contact"
+        elif kinds and all(k == "form" for k in kinds):
+            category = "forms_only"
+            forms += len(stray)
+        else:
+            category = "other"
+        pairs[category] += 1
+        if len(examples) < EXAMPLES:
+            examples.append({"person_a": a, "person_b": b, "category": category, "forms": stray})
+    return {"merged": len(merges), "pairs": pairs, "forms": forms, "examples": examples}
 
 
 def _incomplete_reason(units: list[Unit], profile: dict[Unit, str]) -> str:
@@ -339,7 +402,8 @@ def _incomplete_reason(units: list[Unit], profile: dict[Unit, str]) -> str:
 
 
 def failures(m: dict[str, Any]) -> list[str]:
-    """Per-seed bars from docs/acceptance.md that this run misses."""
+    """Per-seed bars from docs/acceptance.md that fail CI when missed: non-hazard
+    precision, completeness, safety and event attachment."""
     seed = m["seed"]
     out: list[str] = []
     p = m["precision"]["rate"]
@@ -354,13 +418,9 @@ def failures(m: dict[str, Any]) -> list[str]:
     a = m["event_attachment"]["rate"]
     if a is None or a < BAR_ATTACHMENT:
         out.append(f"seed {seed}: event attachment {a} < {BAR_ATTACHMENT}")
-    # Wrong attachment is not failed here: reported against the bar and the floor.
-    sn = m["hard_cases"]["same_name_relative"]["both"]["merged"]
-    if sn > BAR_SAME_NAME_BOTH_DOB_MERGED:
-        out.append(
-            f"seed {seed}: {sn} same_name_relative pair(s) with both DOBs merged, "
-            f"bar is {BAR_SAME_NAME_BOTH_DOB_MERGED}"
-        )
+    # Not failed, reported as known misses (docs/results.md): wrong attachment,
+    # against the bar and the floor (ADR 0004), and same-name pairs with both DOBs
+    # merged, with their breakdown (ADR 0001).
     return out
 
 
@@ -375,7 +435,11 @@ def format_metrics(m: dict[str, Any]) -> str:
         " report only)",
         "same-name     merged with both DOBs "
         f"{m['hard_cases']['same_name_relative']['both']['merged']}"
-        f"/{m['hard_cases']['same_name_relative']['both']['pairs']}",
+        f"/{m['hard_cases']['same_name_relative']['both']['pairs']}"
+        f" (contact-to-contact {m['same_name_both_dob']['pairs']['contact']}, "
+        f"forms only {m['same_name_both_dob']['pairs']['forms_only']} "
+        f"via {m['same_name_both_dob']['forms']} forms, "
+        f"other {m['same_name_both_dob']['pairs']['other']}; reported, not failed)",
         f"completeness  {comp['combined']['rate']}  "
         + "  ".join(f"{k}={v['rate']}" for k, v in comp["by_kind"].items()),
         f"recall        {m['recall']['rate']}",

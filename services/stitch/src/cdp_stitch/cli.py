@@ -4,6 +4,7 @@
   cdp-stitch idempotency
   cdp-stitch evaluate --out FILE [--stitch-summary FILE] [--check]
   cdp-stitch device-rules [--out FILE]
+  cdp-stitch report --seed N [--seed N ...] [--eval-dir DIR] --out FILE [--check]
 
 DATABASE_URL defaults to the docker-compose database.
 """
@@ -20,6 +21,7 @@ from cdp_stitch.device_eval import compare_rules
 from cdp_stitch.evaluate import evaluate, failures, format_metrics
 from cdp_stitch.idempotency import profile_hash, row_counts
 from cdp_stitch.pipeline import StitchResult, run_stitch
+from cdp_stitch.report import load_manifests, load_metrics, render, run_failures
 
 
 def _print_result(r: StitchResult) -> None:
@@ -94,6 +96,19 @@ def cmd_device_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    metrics = load_metrics(args.eval_dir, args.seed)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(render(metrics, load_manifests(args.seed)), encoding="utf-8")
+    print(f"wrote {args.out}")
+    failed = run_failures(metrics)
+    for f in failed:
+        print(f"FAIL  {f}")
+    if not failed:
+        print("ok    every failing bar is met (known misses are reported, not failed)")
+    return 1 if args.check and failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cdp-stitch")
     sub = parser.add_subparsers(required=True)
@@ -117,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("device-rules", help="compare device rules on the loaded seed")
     p.add_argument("--out", type=Path, help="write the comparison (JSON) here")
     p.set_defaults(func=cmd_device_rules)
+
+    p = sub.add_parser("report", help="write docs/results.md from evaluate output")
+    p.add_argument("--seed", type=int, action="append", required=True)
+    p.add_argument("--eval-dir", type=Path, default=DATA_DIR / "eval")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--check", action="store_true", help="exit 1 if a failing bar is missed")
+    p.set_defaults(func=cmd_report)
 
     args = parser.parse_args(argv)
     code: int = args.func(args)

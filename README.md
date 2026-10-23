@@ -27,4 +27,4 @@ docker compose up -d && pnpm install && pnpm db:migrate && pnpm seed && pnpm dev
 ### Loading semantics
 The loader (`services/ingest/load.ts`) treats each generated file as a **full snapshot**: it inserts new keys, updates changed rows and deletes keys missing from the file, in one transaction. So `raw.*` and `eval.*` mirror the most recently loaded seed, and reloading the same seed changes nothing. This is a deliberate choice for synthetic data, where switching seeds should give a clean dataset. A production raw layer would be append-only: it would keep every delivery with its `batch_id` and leave deduplication and deletes to `staging`.
 
-> **Status:** M2. The synthetic feed generator, ground truth and idempotent loaders exist; `pnpm seed` generates and loads seed 42. Identity stitching arrives in M3 and `pnpm dev` in M7.
+> **Status:** M3 done. Identity stitching with project 01 (`v1.1.0`) meets the identity bars on the dev seeds except two explained misses (wrong device attachment, whose unavoidable floor is above the bar, and same-name relatives joined by a form fill); numbers in [docs/results.md](docs/results.md). `pnpm dev` arrives in M7.

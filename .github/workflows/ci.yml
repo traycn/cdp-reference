@@ -115,7 +115,7 @@ jobs:
   # For each seed: generate twice (byte-identical, hash equal to
   # services/ingest/seed-hashes.json), counts inside docs/acceptance.md ranges,
   # then load twice (the second load must change no row and no max(loaded_at)).
-  # The profile hash check joins this job with stitching in M3.
+  # Then, per seed, stitch twice: row counts and the profile hash must not change.
   seed-idempotency:
     runs-on: ubuntu-24.04
     services:
@@ -153,3 +153,133 @@ jobs:
       - name: Generate and load the development seeds twice
         working-directory: services/ingest
         run: node verify.ts --seed 42 --seed 7 --seed 1234
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/stitch/uv.lock
+      - name: Stitch each seed twice; the profile hash must not change
+        run: |
+          for seed in 42 7 1234; do
+            (cd services/ingest && node load.ts --dir "../../.data/seed-$seed")
+            (cd services/stitch && uv run --locked cdp-stitch idempotency)
+          done
+
+  # Development seeds only. Generate, load, stitch and evaluate each seed, then
+  # write the results page. Fails if non-hazard precision (per seed and mean),
+  # completeness, safety or event attachment miss their docs/acceptance.md bars.
+  # Wrong attachment (against the floor, ADR 0004) and same-name pairs with both
+  # DOBs merged (ADR 0001) are known misses: reported, not failed.
+  stitch-eval:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DBMATE_IMAGE: ghcr.io/amacneil/dbmate:2.37.0@sha256:0101fcc9999596f4a6930e5627296cd91f3bfa225e3e8c1699fc00881e439cc6
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/stitch/uv.lock
+      - name: uv sync
+        working-directory: services/stitch
+        run: uv sync --locked
+      - name: dbmate up
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL \
+            -e DBMATE_MIGRATIONS_DIR=/db/migrations \
+            -e DBMATE_SCHEMA_FILE=/tmp/schema.sql \
+            -v "$GITHUB_WORKSPACE/db:/db:ro" \
+            "$DBMATE_IMAGE" --wait --no-dump-schema up
+      - name: Generate, load, stitch and evaluate the development seeds
+        run: scripts/stitch-eval.sh 42 7 1234
+      - name: Check the bars
+        working-directory: services/stitch
+        run: |
+          uv run --locked cdp-stitch report --seed 42 --seed 7 --seed 1234 \
+            --out "$RUNNER_TEMP/results.md" --check
+      - name: Results to the job summary
+        if: always()
+        run: '[ ! -f "$RUNNER_TEMP/results.md" ] || cat "$RUNNER_TEMP/results.md" >> "$GITHUB_STEP_SUMMARY"'
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: stitch-eval
+          path: .data/eval/
+
+  # Rebuilds docs/results.md from scratch (generate, load, stitch, evaluate,
+  # report) and fails if it differs from the committed file. Any drift shows up
+  # here, including in the known misses.
+  reproduce:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DBMATE_IMAGE: ghcr.io/amacneil/dbmate:2.37.0@sha256:0101fcc9999596f4a6930e5627296cd91f3bfa225e3e8c1699fc00881e439cc6
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/stitch/uv.lock
+      - name: uv sync
+        working-directory: services/stitch
+        run: uv sync --locked
+      - name: dbmate up
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL \
+            -e DBMATE_MIGRATIONS_DIR=/db/migrations \
+            -e DBMATE_SCHEMA_FILE=/tmp/schema.sql \
+            -v "$GITHUB_WORKSPACE/db:/db:ro" \
+            "$DBMATE_IMAGE" --wait --no-dump-schema up
+      - name: Generate, load, stitch and evaluate the development seeds
+        run: scripts/stitch-eval.sh 42 7 1234
+      - name: Regenerate docs/results.md
+        working-directory: services/stitch
+        run: |
+          uv run --locked cdp-stitch report --seed 42 --seed 7 --seed 1234 \
+            --out ../../docs/results.md
+      - name: docs/results.md matches the committed file
+        run: |
+          if ! git diff --exit-code -- docs/results.md; then
+            echo "::error file=docs/results.md::docs/results.md differs from a fresh run. Regenerate it with scripts/stitch-eval.sh and cdp-stitch report, and commit it."
+            exit 1
+          fi

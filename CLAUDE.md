@@ -53,8 +53,8 @@ docker-compose.yml
 | `migrate` | M1 | Postgres 16 service; `dbmate up`, `dbmate rollback` + `up` again, schema dump diffed against `db/schema.sql` |
 | `test` | M2 | vitest across the workspace; coverage gates as in Constraints |
 | `seed-idempotency` | M2 | Seed the dev seeds twice; fail if any row count or the profile hash changes, or a count falls outside `docs/acceptance.md` ranges |
-| `stitch-eval` | M3 | `uv sync --locked` in `services/stitch`, then stitch and run the `docs/acceptance.md` SQL checks; fail below thresholds |
-| `reproduce` | M3 | Regenerate `docs/results.md`; fail if it differs from the committed copy (timings excluded) |
+| `stitch-eval` | M3 | `uv sync --locked` in `services/stitch`, then generate, load, stitch and evaluate each dev seed (`scripts/stitch-eval.sh`); fail if non-hazard precision, completeness, safety or event attachment miss their bars. Wrong attachment and the both-DOBs same-name bar are known misses (ADR 0004, ADR 0001): reported, not failed |
+| `reproduce` | M3 | Regenerate `docs/results.md` from scratch (`cdp-stitch report`); fail if it differs from the committed copy. The page holds no timings |
 | `perf-report` | M7 | Measure the performance numbers in `docs/acceptance.md` and post them to the job summary. **Reports only; never fails.** |
 | `build` | M7 | `next build`, start the server, request every page |
 | `terraform` | M8 | `fmt -check`, `validate`, `tflint`, `plan` on PRs via OIDC (no long-lived keys) |

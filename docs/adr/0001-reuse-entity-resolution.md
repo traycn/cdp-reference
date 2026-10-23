@@ -133,6 +133,6 @@ This wasn't anticipated above. It is the main identity finding of M3.
 - 02's identity numbers depend on a pinned version of 01. `docs/results.md` must name the tag.
 - 01's known limitations carry over, and 02 must report them rather than hide them:
   - same-name relatives with a missing DOB can merge;
-  - same-name relatives with both DOBs present keep separate contacts since `v1.1.0`, but a DOB-less form submission carrying their shared identifier can join the wrong relative's profile (above);
+  - **a form fill that matches both relatives.** Since `v1.1.0`, same-name relatives with both DOBs present keep separate contacts. A form fill carries no DOB, though. One with their shared name and shared email or phone matches both contacts by `exact_id`, and the cannot-link lets it join only one, with nothing on the form to say which. When it joins the wrong relative, that relative's profile holds the other's form (and, through rule (d), its session's events). `docs/acceptance.md` counts this as a merge of the pair, so the bar "0 same-name pairs with both DOBs present merged" is a known miss, reported in `docs/results.md` with a breakdown (contact-to-contact merges, expected 0; merges only through form fills, with the forms involved);
   - household members with similar first names sharing a phone can merge;
   - identity drift where a person changes both phone and email stays split.
