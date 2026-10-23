@@ -9,9 +9,17 @@ each of which already has a profile from 01. A device never merges profiles.
              on a tie for most.
   nearest    per event, not per device: each event goes to the profile of the
              device's form fill nearest in time (the earlier fill on a tie).
+  session_majority
+             per session: a session containing form fills that all resolve to
+             one profile goes to that profile; every other session follows
+             `majority`.
+  session_strict
+             as `session_majority`, except that on a device whose form fills
+             resolve to more than one profile (sharing is evident), sessions
+             without a deciding fill stay unattached.
 
-`unanimous` is what the pipeline writes; `majority` and `nearest` are evaluated
-for comparison only (`cdp-stitch device-rules`).
+`unanimous` is what the pipeline writes; the others are evaluated for
+comparison only (`cdp-stitch device-rules`).
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ class FormFill:
     device: str
     occurred_at: datetime
     profile: str
+    session: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +44,7 @@ class Event:
     event_id: str
     device: str
     occurred_at: datetime
+    session: str | None = None
 
 
 def _profiles_by_device(fills: Iterable[FormFill]) -> dict[str, Counter[str]]:
@@ -97,8 +107,46 @@ def per_event(
     return assign
 
 
+def _session_profiles(fills: Iterable[FormFill]) -> dict[str, str]:
+    """session → profile, for sessions whose form fills all resolve to one profile."""
+    by_session: dict[str, set[str]] = defaultdict(set)
+    for f in fills:
+        if f.session is not None:
+            by_session[f.session].add(f.profile)
+    return {s: next(iter(ps)) for s, ps in by_session.items() if len(ps) == 1}
+
+
+def by_session(
+    device_rule: Callable[[Iterable[FormFill]], Mapping[str, str]],
+) -> Callable[[list[FormFill], list[Event]], dict[str, str]]:
+    """event_id → its session's fill profile, else the profile `device_rule` gives its device."""
+
+    def assign(fills: list[FormFill], events: list[Event]) -> dict[str, str]:
+        session_profile = _session_profiles(fills)
+        device_profile = device_rule(fills)
+        out: dict[str, str] = {}
+        for e in events:
+            pid = session_profile.get(e.session) if e.session is not None else None
+            if pid is None:
+                pid = device_profile.get(e.device)
+            if pid is not None:
+                out[e.event_id] = pid
+        return out
+
+    return assign
+
+
+# (d) majority fallback. (e) unanimous fallback: on a device whose fills all
+# resolve to one profile, majority and unanimous agree; on any other device,
+# sessions without a deciding fill stay unattached.
+session_majority = by_session(majority)
+session_strict = by_session(unanimous)
+
+
 RULES: dict[str, Callable[[list[FormFill], list[Event]], dict[str, str]]] = {
     "unanimous": per_event(unanimous),
     "majority": per_event(majority),
     "nearest": nearest,
+    "session_majority": session_majority,
+    "session_strict": session_strict,
 }

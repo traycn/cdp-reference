@@ -75,16 +75,21 @@ def cmd_device_rules(args: argparse.Namespace) -> int:
     with connect() as conn:
         seed = loaded_seed(conn)
         results = compare_rules(conn)
+    fl = results.pop("floor")
     print(f"seed {seed}: device rules (comparison only; the pipeline uses unanimous)")
+    print(
+        f"  floor: {fl['rate']:.4f} ({fl['unidentifiable']:,}/{fl['events']:,}) borrowed events "
+        "in sessions with no form fill"
+    )
     for name, r in results.items():
         print(
-            f"  {name:10} attachment {r['rate']:.4f} ({r['attached']:,}/{r['events']:,})  "
+            f"  {name:16} attachment {r['rate']:.4f} ({r['attached']:,}/{r['events']:,})  "
             f"wrong {r['wrong_rate']:.4f} ({r['wrong']:,})  "
             f"fragment {r['fragment_rate']:.4f} ({r['fragment']:,})"
         )
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"seed": seed, "rules": results}
+        payload = {"seed": seed, "floor": fl, "rules": results}
         args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
