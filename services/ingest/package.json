@@ -6,7 +6,6 @@
   "scripts": {
     "generate": "node generate.ts",
     "load": "node load.ts",
-    "seed": "node generate.ts --seed 42 --out ../../.data/seed-42 && node load.ts --dir ../../.data/seed-42",
     "verify": "node verify.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p ."

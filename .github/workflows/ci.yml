@@ -111,6 +111,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
+  # services/stitch: formatting, lint, types and tests. The tests make a
+  # throwaway database next to DATABASE_URL and apply db/migrations themselves;
+  # with CI set, a missing Postgres fails them instead of skipping them.
+  stitch-python:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        env:
+          POSTGRES_USER: cdp
+          POSTGRES_PASSWORD: cdp_ci_only
+          POSTGRES_DB: cdp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cdp -d cdp"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
+    defaults:
+      run:
+        working-directory: services/stitch
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/stitch/uv.lock
+      - run: uv sync --locked
+      - run: uv run --locked ruff format --check src tests
+      - run: uv run --locked ruff check src tests
+      - run: uv run --locked mypy --strict src tests
+      - run: uv run --locked pytest -v -rs
+
   # Development seeds only; held-out seeds stay unrun until acceptance-frozen.
   # For each seed: generate twice (byte-identical, hash equal to
   # services/ingest/seed-hashes.json), counts inside docs/acceptance.md ranges,

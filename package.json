@@ -12,7 +12,7 @@
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
-    "seed": "pnpm --filter @cdp/ingest run seed",
+    "seed": "scripts/seed.sh 42",
     "db:migrate": "docker compose run --rm dbmate --wait up",
     "db:rollback": "docker compose run --rm dbmate rollback",
     "db:status": "docker compose run --rm dbmate status"
