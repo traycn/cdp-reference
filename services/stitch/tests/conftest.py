@@ -21,7 +21,8 @@ MIGRATIONS = REPO_ROOT / "db" / "migrations"
 # Jane Doe: a CRM contact (with an opportunity) and two form fills under her email.
 # Bob Roe: one form fill, no CRM contact.
 # Devices: dev-jane (Jane's fills only), dev-bob (Bob's), dev-shared (one fill each,
-# so its fills fall in two profiles), dev-none (page views only, no form fill).
+# in its own session, so its fills fall in two profiles), dev-none (page views only,
+# no form fill).
 CRM_CONTACTS = [
     # crm_id, email, verified, phone, first, last, dob, address, city, state, zip, company,
     # title, updated_at (23:30 in New York is the next day in UTC)
@@ -29,7 +30,7 @@ CRM_CONTACTS = [
      "1 Main St", "Boston", "ma", "02139", "Acme", "CTO", "2025-03-01T23:30:00-05:00"),
 ]  # fmt: skip
 FORMS = [
-    # source_event_id, occurred_at, anonymous_id, email, properties
+    # source_event_id, occurred_at, anonymous_id, email, properties (+ FORM_SESSIONS)
     ("W0000002", "2025-02-01T10:00:00Z", "dev-jane", "jane.doe@example.com",
      '{"first_name": "Jane", "last_name": "Doe", "company": "Acme"}'),
     ("W0000004", "2025-02-02T10:00:00Z", "dev-bob", "bob@roe.example",
@@ -39,6 +40,13 @@ FORMS = [
     ("W0000008", "2025-02-04T10:00:00Z", "dev-shared", "bob@roe.example",
      '{"first_name": "Bob", "last_name": "Roe", "company": "Initech"}'),
 ]  # fmt: skip
+# Each form fill's session_id; every fill is in a session of its own.
+FORM_SESSIONS = {
+    "W0000002": "s_jane",
+    "W0000004": "s_bob",
+    "W0000006": "s_shared_jane",
+    "W0000008": "s_shared_bob",
+}
 PAGE_VIEWS = [
     ("W0000001", "2025-02-01T09:58:00Z", "dev-jane"),
     ("W0000003", "2025-02-02T09:58:00Z", "dev-bob"),
@@ -65,8 +73,9 @@ def _seed(conn: psycopg.Connection[tuple[Any, ...]]) -> None:
         cur.executemany(
             "INSERT INTO raw.web_event (source_event_id, occurred_at, anonymous_id, event_name, "
             "page_path, email, properties, batch_id) "
-            "VALUES (%s, %s, %s, 'form_submit', '/demo', %s, %s, 'test')",
-            FORMS,
+            "VALUES (%s, %s, %s, 'form_submit', '/demo', %s, "
+            "%s::jsonb || jsonb_build_object('session_id', %s::text), 'test')",
+            [(*form, FORM_SESSIONS[form[0]]) for form in FORMS],
         )
         cur.executemany(
             "INSERT INTO raw.web_event (source_event_id, occurred_at, anonymous_id, event_name, "

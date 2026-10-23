@@ -157,23 +157,38 @@ def floor(fills: list[FormFill], events: list[Event], truth: Truth) -> dict[str,
     return {"events": len(events), "unidentifiable": n, "rate": round(n / len(events), 6)}
 
 
-def linked_devices(conn: Conn) -> dict[str, str]:
-    """device → profile as written by the pipeline."""
+def _links(conn: Conn, id_type: str) -> dict[str, str]:
     return dict(
         conn.execute(
-            "SELECT id_value, profile_id::text FROM core.identity_link "
-            "WHERE id_type = 'anonymous_id'"
+            "SELECT id_value, profile_id::text FROM core.identity_link WHERE id_type = %s",
+            (id_type,),
         ).fetchall()
     )
 
 
+def linked_events(conn: Conn, events: list[Event]) -> dict[str, str]:
+    """event_id → profile as written by the pipeline: the event's session link if it
+    has one, else its device link (ADR 0004)."""
+    session_profile = _links(conn, "session_id")
+    device_profile = _links(conn, "anonymous_id")
+    out: dict[str, str] = {}
+    for e in events:
+        pid = session_profile.get(e.session) if e.session is not None else None
+        if pid is None:
+            pid = device_profile.get(e.device)
+        if pid is not None:
+            out[e.event_id] = pid
+    return out
+
+
 def current_attachment(conn: Conn) -> dict[str, Any]:
-    """Attachment and wrong attachment of the device links in core.identity_link."""
+    """Attachment, wrong attachment and the floor, for the links in core.identity_link."""
     fills = read_form_fills(conn)
     events = read_events(conn, {f.device for f in fills})
-    device_profile = linked_devices(conn)
-    assigned = {e.event_id: device_profile[e.device] for e in events if e.device in device_profile}
-    return attachment_metrics(assigned, events, Truth(conn))
+    truth = Truth(conn)
+    out = attachment_metrics(linked_events(conn, events), events, truth)
+    out["floor"] = floor(fills, events, truth)
+    return out
 
 
 def compare_rules(

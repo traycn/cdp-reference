@@ -95,7 +95,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "entity-resolution", git = "https://github.com/traycn/entity-resolution?tag=v1.0.0" },
+    { name = "entity-resolution", git = "https://github.com/traycn/entity-resolution?tag=v1.1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
 ]
 
@@ -179,8 +179,8 @@ wheels = [
 
 [[package]]
 name = "entity-resolution"
-version = "1.0.0"
-source = { git = "https://github.com/traycn/entity-resolution?tag=v1.0.0#df0287a0114351d22a598e086dcd9c58ebbc5608" }
+version = "1.1.0"
+source = { git = "https://github.com/traycn/entity-resolution?tag=v1.1.0#7623a035c4d444a87dc06853187634e38ed63d11" }
 dependencies = [
     { name = "email-validator" },
     { name = "faker" },

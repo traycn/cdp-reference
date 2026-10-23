@@ -27,7 +27,7 @@ def _print_result(r: StitchResult) -> None:
     print(f"records  {r.person_records:,} person records → {r.profiles:,} profiles")
     print("links    " + ", ".join(f"{k}={v:,}" for k, v in r.links.items()))
     print("evidence " + ", ".join(f"{k}={v:,}" for k, v in r.evidence.items()))
-    print(f"devices  {r.device_conflicts:,} left unattached (form submissions in >1 profile)")
+    print(f"devices  {r.device_conflicts:,} without a device link (tie for most form fills)")
     print("seconds  " + ", ".join(f"{k} {v:.2f}" for k, v in r.seconds.items()))
 
 
@@ -76,7 +76,7 @@ def cmd_device_rules(args: argparse.Namespace) -> int:
         seed = loaded_seed(conn)
         results = compare_rules(conn)
     fl = results.pop("floor")
-    print(f"seed {seed}: device rules (comparison only; the pipeline uses unanimous)")
+    print(f"seed {seed}: device rules (the pipeline uses session_majority, ADR 0004)")
     print(
         f"  floor: {fl['rate']:.4f} ({fl['unidentifiable']:,}/{fl['events']:,}) borrowed events "
         "in sessions with no form fill"

@@ -14,7 +14,7 @@ cdp-stitch = "cdp_stitch.cli:main"
 [tool.uv.sources]
 # Pinned to a tag on purpose (docs/adr/0001-reuse-entity-resolution.md). Upgrading
 # 01 is a deliberate change here, followed by a re-run of docs/acceptance.md.
-entity-resolution = { git = "https://github.com/traycn/entity-resolution", tag = "v1.0.0" }
+entity-resolution = { git = "https://github.com/traycn/entity-resolution", tag = "v1.1.0" }
 
 [dependency-groups]
 dev = [

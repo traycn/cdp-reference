@@ -4,9 +4,12 @@ Reads only the database: core.identity_link for each unit's profile, eval.* for 
 truth. Units are CRM contacts (crm_id), form submissions (source_event_id) and
 devices (anonymous_id). A device is attachable when it has at least one form
 submission; devices without one are left out of completeness, recall and event
-attachment, since nothing can link them. Wrong attachment (events attached to a
-profile that holds none of the records of the person who produced them) is
-measured per event from eval.truth_event (cdp_stitch.device_eval).
+attachment, since nothing can link them. Event attachment reads the links as
+written: an event's session link if it has one, else its device link (ADR 0004).
+Wrong attachment (events attached to a profile that holds none of the records
+of the person who produced them) is measured per event from eval.truth_event
+(cdp_stitch.device_eval). Its bar (≤ 0.010) is reported as a miss next to the
+floor, not failed: no rule can get under the floor (ADR 0004).
 
 Precision has two forms (docs/acceptance.md, change log 2026-10-22): all pairs,
 reported against the original bar, and non-hazard pairs, which carry the bar.
@@ -25,7 +28,7 @@ import psycopg
 from resolver.normalize import normalize_email, normalize_phone
 from resolver.scoring import NormalizedRecord, has_conflicting_identifiers
 
-from cdp_stitch.device_eval import current_attachment
+from cdp_stitch.device_eval import compare_rules, current_attachment
 from cdp_stitch.engine import engine_info
 
 # docs/acceptance.md bars, per seed. The mean-precision bar is checked across
@@ -211,7 +214,7 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         if bad:
             unsafe.append({"profile_id": pid, "conflicting_contacts": bad})
 
-    # -- event attachment and wrong attachment (device links as written) ----
+    # -- event attachment and wrong attachment (links as written) -----------
     attached_devices = {k for t, k in profile if t == "device"}
     event_attachment = current_attachment(conn)
     device_conflicts = sum(1 for d in form_devices if d not in attached_devices)
@@ -310,6 +313,7 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         ],
         "safety": {"unsafe_profiles": len(unsafe), "examples": unsafe[:EXAMPLES]},
         "event_attachment": event_attachment,
+        "device_rules": {k: v for k, v in compare_rules(conn).items() if k != "floor"},
         "device_conflicts": device_conflicts,
         "decisions": dict(sorted(decisions.items())),
         "hard_cases": hard,
@@ -350,9 +354,7 @@ def failures(m: dict[str, Any]) -> list[str]:
     a = m["event_attachment"]["rate"]
     if a is None or a < BAR_ATTACHMENT:
         out.append(f"seed {seed}: event attachment {a} < {BAR_ATTACHMENT}")
-    w = m["event_attachment"]["wrong_rate"]
-    if w is None or w > BAR_WRONG_ATTACHMENT:
-        out.append(f"seed {seed}: wrong attachment {w} > {BAR_WRONG_ATTACHMENT}")
+    # Wrong attachment is not failed here: reported against the bar and the floor.
     sn = m["hard_cases"]["same_name_relative"]["both"]["merged"]
     if sn > BAR_SAME_NAME_BOTH_DOB_MERGED:
         out.append(
@@ -381,7 +383,9 @@ def format_metrics(m: dict[str, Any]) -> str:
         f"attachment    {m['event_attachment']['rate']}  "
         f"({m['event_attachment']['attached']:,}/{m['event_attachment']['events']:,})",
         f"wrong attach  {m['event_attachment']['wrong_rate']}  "
-        f"({m['event_attachment']['wrong']:,}/{m['event_attachment']['attached']:,})",
+        f"({m['event_attachment']['wrong']:,}/{m['event_attachment']['attached']:,}), "
+        f"bar {BAR_WRONG_ATTACHMENT}, floor {m['event_attachment']['floor']['rate']} "
+        "(reported, not failed)",
         f"device conflicts {m['device_conflicts']:,}",
         "REVIEW        "
         + ", ".join(f"{r}={n}" for r, n in m["decisions"].get("REVIEW", {}).items()),

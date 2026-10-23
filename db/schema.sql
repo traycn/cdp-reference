@@ -147,7 +147,7 @@ CREATE TABLE core.identity_link (
     confidence numeric(4,3) NOT NULL,
     linked_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT identity_link_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
-    CONSTRAINT identity_link_id_type_check CHECK ((id_type = ANY (ARRAY['crm_id'::text, 'form_submission'::text, 'anonymous_id'::text, 'opp_id'::text, 'email'::text, 'phone'::text])))
+    CONSTRAINT identity_link_id_type_check CHECK ((id_type = ANY (ARRAY['crm_id'::text, 'form_submission'::text, 'anonymous_id'::text, 'opp_id'::text, 'session_id'::text, 'email'::text, 'phone'::text])))
 );
 
 
@@ -618,7 +618,7 @@ CREATE UNIQUE INDEX conversion_won_once ON core.conversion USING btree (source_i
 -- Name: identity_link_unit_unique; Type: INDEX; Schema: core; Owner: -
 --
 
-CREATE UNIQUE INDEX identity_link_unit_unique ON core.identity_link USING btree (id_type, id_value) WHERE (id_type = ANY (ARRAY['crm_id'::text, 'form_submission'::text, 'anonymous_id'::text, 'opp_id'::text]));
+CREATE UNIQUE INDEX identity_link_unit_unique ON core.identity_link USING btree (id_type, id_value) WHERE (id_type = ANY (ARRAY['crm_id'::text, 'form_submission'::text, 'anonymous_id'::text, 'opp_id'::text, 'session_id'::text]));
 
 
 --
@@ -723,4 +723,5 @@ ALTER TABLE ONLY core.touchpoint
 INSERT INTO public.schema_migrations (version) VALUES
     ('001'),
     ('002'),
-    ('003');
+    ('003'),
+    ('004');

@@ -3,8 +3,16 @@
 A device (anonymous_id) is linked to people only through its form submissions,
 each of which already has a profile from 01. A device never merges profiles.
 
-  unanimous  the adopted rule (CLAUDE.md, M3): attach the device when all its
-             form fills are in one profile; otherwise leave it unattached.
+The pipeline uses `session_majority`, rule (d) (ADR 0004). It writes a
+'session_id' link for each session with a deciding fill (`session_profiles`)
+and an 'anonymous_id' link for each device with a majority (`majority`). A
+device with a tie for most fills gets no device link (`unattached_devices`);
+its sessions with a deciding fill still attach. Known cost: a borrower's
+session without a form fill goes to the device's majority profile, usually
+the owner's.
+
+  unanimous  attach the device when all its form fills are in one profile;
+             otherwise leave it unattached. The M3 rule until ADR 0004.
   majority   attach to the profile holding most of its form fills; unattached
              on a tie for most.
   nearest    per event, not per device: each event goes to the profile of the
@@ -18,8 +26,7 @@ each of which already has a profile from 01. A device never merges profiles.
              resolve to more than one profile (sharing is evident), sessions
              without a deciding fill stay unattached.
 
-`unanimous` is what the pipeline writes; the others are evaluated for
-comparison only (`cdp-stitch device-rules`).
+All five are compared on each seed by `cdp-stitch device-rules`.
 """
 
 from __future__ import annotations
@@ -107,7 +114,13 @@ def per_event(
     return assign
 
 
-def _session_profiles(fills: Iterable[FormFill]) -> dict[str, str]:
+def unattached_devices(fills: Iterable[FormFill]) -> list[str]:
+    """Devices with form fills but no majority profile (a tie for most fills)."""
+    attached = majority(fills := list(fills))
+    return sorted({f.device for f in fills} - attached.keys())
+
+
+def session_profiles(fills: Iterable[FormFill]) -> dict[str, str]:
     """session → profile, for sessions whose form fills all resolve to one profile."""
     by_session: dict[str, set[str]] = defaultdict(set)
     for f in fills:
@@ -122,7 +135,7 @@ def by_session(
     """event_id → its session's fill profile, else the profile `device_rule` gives its device."""
 
     def assign(fills: list[FormFill], events: list[Event]) -> dict[str, str]:
-        session_profile = _session_profiles(fills)
+        session_profile = session_profiles(fills)
         device_profile = device_rule(fills)
         out: dict[str, str] = {}
         for e in events:

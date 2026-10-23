@@ -99,7 +99,7 @@ These were open until 01 `v1.0.0` (commit `df0287a`) ran on 02's output, on dev 
 - **`confidence` in `core.identity_link` is 1.0 for every link.** Every link comes from a deterministic rule:
   - 01's `exact_id` (with `allow_weighted_match = false`, nothing else auto-merges);
   - a foreign key (opportunity → `crm_id`);
-  - a device whose form submissions all agree.
+  - a session's own form fill, or a device's majority of form fills (rule (d), ADR 0004; until 2026-10-23, a device whose form submissions all agree).
 
   01's `score` is a weighted similarity, not a probability, so it stays in `core.link_evidence.score` and is not copied into `confidence`. The column is kept for a future probabilistic source.
 - **Runtime.** Small, as expected. Each dev seed has about 15.8k person records (about 7k contacts and 8.8k form submissions). The 01 step takes about 2.3 s, and the whole stitch run (export, resolve, load) about 4 s, on a local Apple-silicon laptop. Measured numbers will be reported in `docs/results.md`.
@@ -124,7 +124,8 @@ This wasn't anticipated above. It is the main identity finding of M3.
   - C000335–C004041: REVIEW, `exact_id_dob_mismatch`.
   - Forms W0009174 and W0121582 carry only an email. Each has a MATCH (`exact_id`) with both contacts, so the two contacts end up in one cluster.
 - On the dev seeds, 39, 35 and 37 of the 50 `same_name_relative` pairs with **both** DOBs present merged this way. The pairs with one or both DOBs missing merged in every case. These merges are the only wrong merges on the dev seeds, and they are why pairwise precision is about 0.955.
-- **Fix (decided, not yet made):** in 01, `exact_id_dob_mismatch` pairs become hard cannot-links in conflict-aware clustering, so a bridge record can't join them. It ships as 01 `v1.1.0`, is re-measured in 01, and 02 then moves its pin. 02 doesn't work around it locally.
+- **Fix, made in 01 `v1.1.0` (commit `7623a03`):** `exact_id_dob_mismatch` pairs are hard cannot-links in conflict-aware clustering, so a bridge record can't join them. It was re-measured in 01. 02 moved its pin to `v1.1.0` on 2026-10-23 and doesn't work around it locally.
+- **After the fix,** on the dev seeds, the two CRM contacts of a `same_name_relative` pair with both DOBs present are never in one profile. The DOB-less form submission that bridged them now joins only one of the two contacts, and nothing on the form says which. In 9, 10 and 9 pairs (seeds 42, 7, 1234) at least one relative's form sits with the other relative's contact. Each such form carries the same name and the shared email, and no phone. The acceptance bar counts any shared unit as a merge, so these pairs still count as merged.
 
 ## Consequences
 
@@ -132,6 +133,6 @@ This wasn't anticipated above. It is the main identity finding of M3.
 - 02's identity numbers depend on a pinned version of 01. `docs/results.md` must name the tag.
 - 01's known limitations carry over, and 02 must report them rather than hide them:
   - same-name relatives with a missing DOB can merge;
-  - until 01 `v1.1.0`, same-name relatives with both DOBs present can merge through a DOB-less form submission (bridge records, above);
+  - same-name relatives with both DOBs present keep separate contacts since `v1.1.0`, but a DOB-less form submission carrying their shared identifier can join the wrong relative's profile (above);
   - household members with similar first names sharing a phone can merge;
   - identity drift where a person changes both phone and email stays split.

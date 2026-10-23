@@ -2,14 +2,16 @@
 
 Person-to-person merges come only from 01. SQL adds the fixed links afterwards:
   - opportunity → the profile of its crm_id (structural);
-  - device → the profile of its form submissions, only when they all agree
-    (cdp_stitch.devices.unanimous). A device whose submissions fall in two or
-    more profiles stays unattached and is counted as a device conflict. A
-    device never merges profiles.
+  - devices and sessions by rule (d), ADR 0004 (cdp_stitch.devices):
+    a session containing a form fill → that fill's profile ('session_id');
+    a device → the profile holding most of its form fills ('anonymous_id').
+    An event's profile is its session's link if it has one, else its
+    device's. A device with a tie for most fills gets no device link and is
+    counted as a device conflict. A device never merges profiles.
 
 Every link has confidence 1.0: each comes from a deterministic rule (01's
-exact_id under allow_weighted_match = false, a foreign key, or a unanimous
-device). 01's weighted similarity is not a probability, so it stays in
+exact_id under allow_weighted_match = false, a foreign key, a session's own
+form fill, or a device majority). 01's weighted similarity is not a probability, so it stays in
 core.link_evidence.score instead (ADR 0001, "Confirm at M3").
 
 core is rebuilt in one transaction. Profile IDs are UUIDv5 of the anchor key,
@@ -265,14 +267,18 @@ def _load(
                FROM staging.crm_opportunity o
                JOIN core.identity_link l ON l.id_type = 'crm_id' AND l.id_value = o.crm_id"""
         )
-        # Devices: the unanimous rule (cdp_stitch.devices).
+        # Devices and sessions: rule (d), session + majority (ADR 0004).
         fills = read_form_fills(conn)
         device_links = [
             (pid, "anonymous_id", device, "device", 1.0)
-            for device, pid in sorted(devices.unanimous(fills).items())
+            for device, pid in sorted(devices.majority(fills).items())
         ]
-        _copy(cur, "core.identity_link", link_cols, device_links)
-        device_conflicts = len(devices.conflicting_devices(fills))
+        session_links = [
+            (pid, "session_id", session, "session", 1.0)
+            for session, pid in sorted(devices.session_profiles(fills).items())
+        ]
+        _copy(cur, "core.identity_link", link_cols, device_links + session_links)
+        device_conflicts = len(devices.unattached_devices(fills))
         # Contact points of each profile's person records, for search and display.
         # One email or phone can sit on several profiles (a shared household phone).
         cur.execute(
