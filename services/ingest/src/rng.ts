@@ -9,7 +9,11 @@ export class Rng {
   private c: number;
   private d: number;
 
-  constructor(seed: number) {
+  /**
+   * `stream` picks an independent sequence for the same seed. Stream 0 is the
+   * generator's main stream and is the same sequence as before streams existed.
+   */
+  constructor(seed: number, stream = 0) {
     let s = seed >>> 0;
     const splitmix = (): number => {
       s = (s + 0x9e3779b9) >>> 0;
@@ -20,7 +24,7 @@ export class Rng {
     };
     this.a = splitmix();
     this.b = splitmix();
-    this.c = splitmix();
+    this.c = (splitmix() ^ stream) >>> 0;
     this.d = splitmix();
     for (let i = 0; i < 12; i++) this.u32();
   }

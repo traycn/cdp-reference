@@ -3,11 +3,19 @@
  * web sessions, ad clicks and form fills, plus ground truth (docs/acceptance.md).
  * In a shared_device pair, the second person also borrows the first person's
  * device for some sessions; eval.truth_event records who produced each event.
+ * Opportunities come from their own Rng stream (opportunity.ts), after all
+ * activity exists, so their chance can depend on title and engagement.
  *
  * Pure: the output depends only on the options. All randomness comes from one
  * seeded Rng and every timestamp lies in a fixed window, so the same options
  * always give the same tables.
  */
+import {
+  drawOpportunities,
+  OPP_STAGE,
+  OPPORTUNITY_STREAM,
+  type OpportunityPerson,
+} from "./opportunity.ts";
 import { Rng } from "./rng.ts";
 import type {
   AdClickRow,
@@ -51,11 +59,11 @@ export interface GenerateOptions {
 }
 
 /** Bump when a change to the generator is meant to change its output. */
-export const GENERATOR_VERSION = 2;
+export const GENERATOR_VERSION = 3;
 
 const DAY = 86_400_000;
 const WINDOW_START = Date.UTC(2025, 0, 1);
-const WINDOW_END = Date.UTC(2026, 6, 1);
+export const WINDOW_END = Date.UTC(2026, 6, 1);
 
 /** Shares of people per kind; hazard pairs are counted in pairs per person. */
 const MIX = {
@@ -91,8 +99,9 @@ const P_PAGE_STOP = 0.3125; // page views per session: 1 + geometric, mean 3.2
 const P_BORROWED_SESSION_STOP = 0.35; // borrowed sessions on a shared device: 1 + geometric, mean ≈ 2.9
 const P_UNTAGGED_CLICK = 0.05;
 const P_UNTRACKED_CLICK = 0.25; // extra click with no anonymous_id per tracked click
-const P_OPPORTUNITY = 0.25;
-const P_SECOND_OPPORTUNITY = 0.15;
+/** Version 2's opportunity draws on the main stream; see discardVersion2OpportunityDraws. */
+const V2_P_OPPORTUNITY = 0.25;
+const V2_P_SECOND_OPPORTUNITY = 0.15;
 
 const ENTRY_CHANNEL = {
   paid_search: 0.33,
@@ -102,15 +111,6 @@ const ENTRY_CHANNEL = {
   referral: 0.07,
   direct: 0.13,
   unrecognized: 0.02,
-} as const;
-
-const OPP_STAGE = {
-  closed_won: 0.3,
-  closed_lost: 0.35,
-  prospecting: 0.1,
-  qualification: 0.1,
-  proposal: 0.08,
-  negotiation: 0.07,
 } as const;
 
 interface Address {
@@ -181,6 +181,10 @@ class Generator {
   private readonly forms = new Map<Person, WebEventRow[]>();
   private readonly devices = new Map<Person, string[]>();
   private readonly personContacts = new Map<Person, CrmContactRow[]>();
+  /** The contact that owns a CRM person's opportunities (the latest), and when it was created. */
+  private readonly opportunityOwner = new Map<Person, { row: CrmContactRow; created: number }>();
+  /** Start of every session a person produced, on any device. */
+  private readonly sessionStartsOf = new Map<Person, number[]>();
   /** shared_device role b → role a, whose device b borrows. */
   private readonly lender = new Map<Person, Person>();
   /** The person who produced each web event and ad click. */
@@ -198,6 +202,7 @@ class Generator {
     // Lenders first, so a borrower's sessions can use the lender's device.
     for (const p of this.people) if (!this.lender.has(p)) this.createActivity(p);
     for (const p of this.people) if (this.lender.has(p)) this.createActivity(p);
+    this.createOpportunities();
     this.assignDob();
     this.assignIds();
     return {
@@ -398,6 +403,10 @@ class Generator {
       forms.push(form);
     }
     this.forms.set(p, forms);
+    this.sessionStartsOf.set(
+      p,
+      sessions.map((s) => s.start),
+    );
     for (const s of sessions) for (const e of s.events) this.events.push(e);
 
     if (p.inCrm) this.createCrm(p, forms);
@@ -576,35 +585,59 @@ class Generator {
       rows.push(row);
     }
     this.personContacts.set(p, rows);
+    this.opportunityOwner.set(p, { row: rows[rows.length - 1]!, created });
+    this.discardVersion2OpportunityDraws(created);
+  }
 
-    if (rng.bool(P_OPPORTUNITY)) {
-      const owner = rows[rows.length - 1]!;
-      const count = rng.bool(P_SECOND_OPPORTUNITY) ? 2 : 1;
-      let opened = created;
-      for (let i = 0; i < count; i++) {
-        opened = Math.min(opened + rng.int(1, 60) * DAY + rng.int(0, 86_399) * 1000, latest);
-        this.opportunities.push({ row: this.opportunity(opened), created: opened, owner });
+  /**
+   * Version 2 drew opportunities from the main stream at this point. The same
+   * draws are made and thrown away, so the main stream, and with it every table
+   * except raw.crm_opportunity, stays byte-identical to version 2.
+   */
+  private discardVersion2OpportunityDraws(created: number): void {
+    const rng = this.rng;
+    const latest = WINDOW_END - 2 * DAY;
+    if (!rng.bool(V2_P_OPPORTUNITY)) return;
+    const count = rng.bool(V2_P_SECOND_OPPORTUNITY) ? 2 : 1;
+    let opened = created;
+    for (let i = 0; i < count; i++) {
+      opened = Math.min(opened + rng.int(1, 60) * DAY + rng.int(0, 86_399) * 1000, latest);
+      const stage: string = rng.weighted(OPP_STAGE);
+      const closed = opened + rng.int(7, 120) * DAY;
+      if (stage.startsWith("closed_") && !(closed < WINDOW_END)) {
+        rng.pick(["prospecting", "qualification", "proposal", "negotiation"]);
       }
+      rng.int(20, 1200);
     }
   }
 
-  private opportunity(opened: number): CrmOpportunityRow {
-    const rng = this.rng;
-    let stage: string = rng.weighted(OPP_STAGE);
-    const closed = opened + rng.int(7, 120) * DAY;
-    const isClosed = stage.startsWith("closed_") && closed < WINDOW_END;
-    if (stage.startsWith("closed_") && !isClosed) {
-      stage = rng.pick(["prospecting", "qualification", "proposal", "negotiation"]);
+  /** Opportunities for every CRM person, in person order, from the opportunity stream. */
+  private createOpportunities(): void {
+    const rng = new Rng(this.opts.seed, OPPORTUNITY_STREAM);
+    for (const p of this.people) {
+      const owner = this.opportunityOwner.get(p);
+      if (!owner) continue;
+      const person: OpportunityPerson = {
+        created: owner.created,
+        title: p.title,
+        sessionStarts: [...(this.sessionStartsOf.get(p) ?? [])].sort((x, y) => x - y),
+        formTimes: (this.forms.get(p) ?? [])
+          .map((f) => Date.parse(f.occurred_at))
+          .sort((x, y) => x - y),
+      };
+      for (const o of drawOpportunities(rng, person, WINDOW_END)) {
+        const row: CrmOpportunityRow = {
+          opp_id: "",
+          crm_id: "", // the owner's crm_id, set in assignIds
+          stage: o.stage,
+          amount: o.amount,
+          opened_at: iso(o.opened),
+          closed_at: o.closed === null ? null : iso(o.closed),
+          won: o.won,
+        };
+        this.opportunities.push({ row, created: o.opened, owner: owner.row });
+      }
     }
-    return {
-      opp_id: "",
-      crm_id: "", // the owner's crm_id, set in assignIds
-      stage,
-      amount: `${rng.int(20, 1200) * 100}.00`,
-      opened_at: iso(opened),
-      closed_at: isClosed ? iso(closed) : null,
-      won: isClosed ? stage === "closed_won" : null,
-    };
   }
 
   /**
