@@ -1,0 +1,168 @@
+{
+  "halfLifeDays": 90,
+  "formCap": 3,
+  "points": {
+    "seniority": 16,
+    "businessEmail": 0,
+    "verifiedEmail": 3,
+    "formFills": 12.5,
+    "sessions": 25.5,
+    "intentPages": 0,
+    "adClicks": 0,
+    "recency": 0
+  },
+  "fit": {
+    "seeds": [
+      42,
+      7,
+      1234
+    ],
+    "trainingCutoffs": [
+      "2025-07-01",
+      "2025-10-01"
+    ],
+    "lambda": 1,
+    "nonNegative": true,
+    "halfLifeGrid": [
+      {
+        "halfLifeDays": 7,
+        "meanAuc": 0.6551749685049075,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 14,
+        "meanAuc": 0.6615417342276902,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 21,
+        "meanAuc": 0.6659763382070696,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 30,
+        "meanAuc": 0.6694961299710736,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 45,
+        "meanAuc": 0.6758544825197356,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 60,
+        "meanAuc": 0.6777490913052205,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      },
+      {
+        "halfLifeDays": 90,
+        "meanAuc": 0.6808882742010173,
+        "zeroed": [
+          "businessEmail",
+          "intentPages",
+          "adClicks",
+          "recency"
+        ]
+      }
+    ],
+    "intercept": -3.4676865480481145,
+    "coefficients": {
+      "seniority": 0.42450315340486106,
+      "businessEmail": 0,
+      "verifiedEmail": 0.08497427766827013,
+      "formFills": 0.3306286244458758,
+      "sessions": 0.6716072941249623,
+      "intentPages": 0,
+      "adClicks": 0,
+      "recency": 0
+    },
+    "zeroed": [
+      "businessEmail",
+      "intentPages",
+      "adClicks",
+      "recency"
+    ],
+    "scale": {
+      "quantile": 0.99,
+      "to": 100,
+      "factor": 37.83962487920565
+    },
+    "trainingAuc": [
+      {
+        "seed": 42,
+        "cutoff": "2025-07-01",
+        "linear": 0.7142316258351893,
+        "rounded": 0.7138530066815145,
+        "cost": 0.00037861915367476406
+      },
+      {
+        "seed": 42,
+        "cutoff": "2025-10-01",
+        "linear": 0.6420290715704322,
+        "rounded": 0.642408466781475,
+        "cost": -0.00037939521104279894
+      },
+      {
+        "seed": 7,
+        "cutoff": "2025-07-01",
+        "linear": 0.6524695217255392,
+        "rounded": 0.65198108783995,
+        "cost": 0.0004884338855891679
+      },
+      {
+        "seed": 7,
+        "cutoff": "2025-10-01",
+        "linear": 0.6682576922039749,
+        "rounded": 0.6681194887145053,
+        "cost": 0.0001382034894695794
+      },
+      {
+        "seed": 1234,
+        "cutoff": "2025-07-01",
+        "linear": 0.7219354838709677,
+        "rounded": 0.7221744324970132,
+        "cost": -0.0002389486260454543
+      },
+      {
+        "seed": 1234,
+        "cutoff": "2025-10-01",
+        "linear": 0.68640625,
+        "rounded": 0.6865959821428571,
+        "cost": -0.00018973214285711304
+      }
+    ],
+    "maxRoundingCost": 0.0004884338855891679,
+    "commit": "39a0fb2369e243bdf4109eaf0c1bdf1f26a392d1",
+    "workingTreeDirty": true
+  }
+}

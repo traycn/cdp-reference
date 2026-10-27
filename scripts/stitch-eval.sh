@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Seed (generate, load, stitch; scripts/seed.sh) and evaluate each given seed,
-# one after another, into .data/eval/eval-<seed>.json. Used by CI's stitch-eval
+# Seed (generate, load, stitch, lifecycle, lead score; scripts/seed.sh) and evaluate
+# each given seed, one after another, into .data/eval/eval-<seed>.json and
+# .data/eval/lead-score-<seed>.json. Used by CI's stitch-eval
 # and reproduce jobs, and locally:
 #
 #   scripts/stitch-eval.sh 42 7 1234
@@ -18,5 +19,12 @@ for seed in "$@"; do
   (
     cd "$root/services/stitch"
     uv run --locked cdp-stitch evaluate --out "../../.data/eval/eval-$seed.json"
+  )
+  # The M5 measure (docs/acceptance.md, Lead scoring) → .data/eval/lead-score-<seed>.json.
+  # Bars are judged by `cdp-stitch report --check`, like the identity bars, so a missed
+  # bar never stops this script before the results page is written.
+  (
+    cd "$root/services/lead-score"
+    node cli.ts evaluate --seed "$seed"
   )
 done

@@ -2,3 +2,5 @@ pnpm-lock.yaml
 db/
 # Docs are prose with hand-aligned tables; docs/acceptance.md is frozen.
 **/*.md
+# Written by services/lead-score `node cli.ts fit`.
+packages/marketing-logic/src/score-weights.json

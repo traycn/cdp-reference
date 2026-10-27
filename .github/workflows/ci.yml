@@ -172,7 +172,8 @@ jobs:
   # Then materialize lifecycle stages and conversions and run it again: row counts and
   # the conversion hash must not change, every Won profile must have a won opportunity,
   # and no stage may move backward without a recorded reason. The per-seed report
-  # (stage counts, mql and won conversions, backward moves) goes to the log.
+  # (stage counts, mql and won conversions, backward moves) goes to the log. Last,
+  # write core.lead_score and write it again: the second run must change no row.
   seed-idempotency:
     runs-on: ubuntu-24.04
     services:
@@ -220,11 +221,17 @@ jobs:
             (cd services/ingest && node load.ts --dir "../../.data/seed-$seed")
             (cd services/stitch && uv run --locked cdp-stitch idempotency)
             (cd services/lifecycle && node cli.ts run --new-dataset && node cli.ts verify)
+            (cd services/lead-score && node cli.ts run && node cli.ts run --expect-no-change)
           done
 
   # Development seeds only. Generate, load, stitch and evaluate each seed, then
   # write the results page. Fails if non-hazard precision (per seed and mean),
-  # completeness, safety or event attachment miss their docs/acceptance.md bars.
+  # completeness, safety or event attachment miss their docs/acceptance.md bars,
+  # or if the lead score misses the M5 form-fill bar (score ≥ form-fill AUC + 0.05
+  # at 2026-01-01; services/lead-score evaluate). The ceiling bar (≥ ceiling − 0.05)
+  # is reported as a miss, not failed: the ceiling sees engagement after the cutoff
+  # (docs/acceptance.md, change log 2026-10-26). The lead-score leakage tests run
+  # here too, so the measure is never judged without the guard behind it.
   # Wrong attachment (against the floor, ADR 0004) and same-name pairs with both
   # DOBs merged (ADR 0001) are known misses: reported, not failed.
   stitch-eval:
@@ -268,6 +275,9 @@ jobs:
             -e DBMATE_SCHEMA_FILE=/tmp/schema.sql \
             -v "$GITHUB_WORKSPACE/db:/db:ro" \
             "$DBMATE_IMAGE" --wait --no-dump-schema up
+      - name: Lead-score leakage tests
+        working-directory: services/lead-score
+        run: pnpm exec vitest run test/leakage.test.ts
       - name: Generate, load, stitch and evaluate the development seeds
         run: scripts/stitch-eval.sh 42 7 1234
       - name: Check the bars

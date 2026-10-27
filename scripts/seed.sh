@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Generate, load, stitch and materialize (lifecycle stages, history, conversions)
-# each given seed, one after another. `pnpm seed` runs it for seed 42;
+# Generate, load, stitch, materialize (lifecycle stages, history, conversions) and
+# lead-score each given seed, one after another. `pnpm seed` runs it for seed 42;
 # scripts/stitch-eval.sh runs it before evaluating.
 #
 #   scripts/seed.sh 42
@@ -25,5 +25,9 @@ for seed in "$@"; do
   (
     cd "$root/services/lifecycle"
     node cli.ts run --new-dataset
+  )
+  (
+    cd "$root/services/lead-score"
+    node cli.ts run
   )
 done

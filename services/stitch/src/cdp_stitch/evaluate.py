@@ -71,7 +71,9 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
     truth: dict[Unit, tuple[str, str]] = {
         (t, k): (p, kind)
         for t, k, p, kind in _rows(
-            conn, "SELECT unit_type, unit_key, person_id, person_kind FROM eval.truth_record"
+            conn,
+            "SELECT unit_type, unit_key, person_id, person_kind FROM eval.truth_record "
+            "ORDER BY unit_type, unit_key",
         )
     }
     kind_of = {p: kind for p, kind in truth.values()}
@@ -80,7 +82,8 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         for pid, t, v in _rows(
             conn,
             "SELECT profile_id, id_type, id_value FROM core.identity_link "
-            "WHERE id_type IN ('crm_id', 'form_submission', 'anonymous_id')",
+            "WHERE id_type IN ('crm_id', 'form_submission', 'anonymous_id') "
+            "ORDER BY id_type, id_value",
         )
     }
     form_devices = {
@@ -241,7 +244,8 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
     for a, b, kind in _rows(
         conn,
         "SELECT person_a, person_b, kind FROM eval.truth_hazard_pair "
-        "WHERE kind IN ('same_name_relative', 'shared_household_phone')",
+        "WHERE kind IN ('same_name_relative', 'shared_household_phone') "
+        "ORDER BY kind, person_a, person_b",
     ):
         ca, cb = person_contact[a], person_contact[b]
         group = DOB_GROUPS[2 - (dob[ca] + dob[cb])]
@@ -270,6 +274,32 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         units_of,
         profile,
     )
+
+    # -- opportunities and lifecycle (report only) -----------------------------
+    crm_people = {p for (t, _), (p, _) in truth.items() if t == "crm_contact"}
+    opportunity_people = {
+        truth[("crm_contact", str(c))][0]
+        for (c,) in _rows(conn, "SELECT DISTINCT crm_id FROM raw.crm_opportunity")
+    }
+    lifecycle = {
+        "opportunities": int(_rows(conn, "SELECT count(*) FROM raw.crm_opportunity")[0][0]),
+        "crm_people": len(crm_people),
+        "crm_people_with_opportunity": len(opportunity_people),
+        "stages": {
+            str(stage): int(n)
+            for stage, n in _rows(
+                conn,
+                "SELECT coalesce(lifecycle_stage, 'none'), count(*) FROM core.customer_profile "
+                "GROUP BY 1 ORDER BY 1",
+            )
+        },
+        "conversions": {
+            str(kind): int(n)
+            for kind, n in _rows(
+                conn, "SELECT kind, count(*) FROM core.conversion GROUP BY 1 ORDER BY 1"
+            )
+        },
+    }
 
     return {
         "seed": seed,
@@ -330,6 +360,7 @@ def evaluate(conn: Conn, seed: int) -> dict[str, Any]:
         "hard_case_merges": hazard_merges,
         "same_name_both_dob": both_dob,
         "impure_profiles": {"count": len(impure), "examples": impure[:EXAMPLES]},
+        "lifecycle": lifecycle,
     }
 
 

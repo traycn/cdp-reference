@@ -9,12 +9,13 @@ same-name relatives with both DOBs present merged (ADR 0001).
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from cdp_stitch.db import DATA_DIR
+from cdp_stitch.db import DATA_DIR, REPO_ROOT
 from cdp_stitch.evaluate import (
     BAR_ATTACHMENT,
     BAR_COMPLETENESS,
@@ -43,10 +44,26 @@ RULE_NAMES = {
     "session_strict": "(e) session, strict",
 }
 ADOPTED_RULE = "session_majority"
+WEIGHTS_FILE = REPO_ROOT / "packages" / "marketing-logic" / "src" / "score-weights.json"
+CHANGE_LOG = "acceptance.md#change-log"
+EXPLAINED_CEILING = f"miss (explained, [change log 2026-10-26]({CHANGE_LOG}))"
+# Rules the generator's opportunity model ignores (acceptance.md, Opportunity model) and
+# rules it uses; the score never reads the model, so this is for the findings only.
+DECOY_RULES = ("businessEmail", "verifiedEmail", "intentPages", "adClicks")
+TRUE_MODEL_RULES = ("seniority", "formFills", "sessions", "recency")
+LIFECYCLE_STAGES = ("lead", "mql", "sql", "opportunity", "won")
 
 
 def load_metrics(eval_dir: Path, seeds: Sequence[int]) -> list[Metrics]:
-    return [json.loads((eval_dir / f"eval-{s}.json").read_text(encoding="utf-8")) for s in seeds]
+    """Each seed's identity metrics, with its lead-score evaluation (services/lead-score)
+    under "lead_score" when that file exists."""
+    out = []
+    for s in seeds:
+        m = json.loads((eval_dir / f"eval-{s}.json").read_text(encoding="utf-8"))
+        lead = eval_dir / f"lead-score-{s}.json"
+        m["lead_score"] = json.loads(lead.read_text(encoding="utf-8")) if lead.exists() else None
+        out.append(m)
+    return out
 
 
 def load_manifests(seeds: Sequence[int]) -> list[dict[str, Any]]:
@@ -63,6 +80,17 @@ def mean(values: Sequence[float]) -> float:
 def run_failures(ms: Sequence[Metrics]) -> list[str]:
     """Bars that fail CI: per seed (evaluate.failures) and mean non-hazard precision."""
     out = [f for m in ms for f in failures(m)]
+    for m in ms:
+        lead = m["lead_score"]
+        if lead is None:
+            out.append(f"seed {m['seed']}: no lead-score evaluation")
+            continue
+        for name, bar in lead["bars"].items():
+            if bar["enforced"] and not bar["ok"]:
+                out.append(
+                    f"seed {m['seed']}: lead score AUC {lead['auc']['score']:.4f} "
+                    f"< {name} bar {bar['bar']:.4f}"
+                )
     p = mean([m["precision"]["rate"] for m in ms])
     if p < BAR_PRECISION_MEAN:
         out.append(f"mean non-hazard precision {p:.4f} < {BAR_PRECISION_MEAN:.2f}")
@@ -466,6 +494,45 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
     )
     add("")
 
+    # -- opportunities and lifecycle ----------------------------------------------
+    add("## Opportunities and lifecycle")
+    add("")
+    add(
+        "Report only. Opportunities follow the generator's opportunity model (version 3: a "
+        "weekly chance that rises with title seniority and engagement; "
+        "[`acceptance.md`](acceptance.md#opportunity-model-generator-version-3)). Stages "
+        "and conversions are written by `services/lifecycle` "
+        "([`definitions.md`](definitions.md))."
+    )
+    add("")
+    lcs = [m["lifecycle"] for m in ms]
+    lc_rows: list[list[str]] = [
+        ["Opportunities", *(f"{lc['opportunities']:,}" for lc in lcs)],
+        [
+            "CRM people with an opportunity",
+            *(
+                f"{lc['crm_people_with_opportunity']:,} / {lc['crm_people']:,} "
+                f"({_f(lc['crm_people_with_opportunity'] / lc['crm_people'])})"
+                for lc in lcs
+            ),
+        ],
+    ]
+    for stage in LIFECYCLE_STAGES:
+        lc_rows.append(
+            [f"Profiles at stage `{stage}`", *(f"{lc['stages'].get(stage, 0):,}" for lc in lcs)]
+        )
+    for kind in ("mql", "won"):
+        lc_rows.append(
+            [f"Conversions `{kind}`", *(f"{lc['conversions'].get(kind, 0):,}" for lc in lcs)]
+        )
+    add(_table(["Measure", *seed_cols], ["---", *("---:" for _ in seed_cols)], lc_rows))
+    add("")
+
+    # -- lead scoring ----------------------------------------------------------------
+    leads = [m["lead_score"] for m in ms]
+    if all(lead is not None for lead in leads):
+        _lead_section(add, seeds, leads)
+
     # -- performance ---------------------------------------------------------------
     add("## Performance")
     add("")
@@ -475,3 +542,134 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
     )
     add("")
     return "\n".join(out)
+
+
+def _lead_section(add: Callable[[str], None], seeds: Sequence[int], leads: Sequence[Any]) -> None:
+    """Lead scoring (M5): AUCs, bars, and findings about the fitted weights."""
+    seed_cols = [str(s) for s in seeds]
+    first = leads[0]
+    add("## Lead scoring (M5)")
+    add("")
+    add(
+        f"AUC of the lead score at the cutoff {first['cutoff'][:10]} for an opportunity opening "
+        f"within the next {first['horizon_days']} days, among profiles with a CRM contact and no "
+        "opportunity yet ([`acceptance.md`](acceptance.md#lead-scoring-m5)). Weights were fit on "
+        "the development seeds at earlier cutoffs (`packages/marketing-logic/src/"
+        "score-weights.json`)."
+    )
+    add("")
+    add(
+        "- **Ceiling:** AUC of the generator's true probability of an opportunity in the window. "
+        "It includes engagement during the 90 days after the cutoff, which a score taken at the "
+        "cutoff can't see, so the ceiling bar is reported as a miss and not failed "
+        f"([change log 2026-10-26]({CHANGE_LOG}))."
+    )
+    add(
+        "- **Cutoff-visible ceiling:** the generator's weekly hazard with every input frozen at "
+        "its value at the cutoff, as 1 - (1 - h)^13. **Defined after the measure-cutoff numbers "
+        "were seen. Diagnostic only, no bar.**"
+    )
+    add("")
+    add(
+        _table(
+            [
+                "Seed",
+                "Population",
+                "Positives",
+                "Score",
+                "Form-fill",
+                "Random",
+                "Cutoff-visible ceiling (diagnostic)",
+                "Ceiling",
+            ],
+            ["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:"],
+            [
+                [
+                    s,
+                    f"{lead['population']:,}",
+                    f"{lead['positives']:,}",
+                    _f(lead["auc"]["score"]),
+                    _f(lead["auc"]["form_fills"]),
+                    _f(lead["auc"]["random"]),
+                    _f(lead["auc"]["ceiling_cutoff_visible"]),
+                    _f(lead["auc"]["ceiling"]),
+                ]
+                for s, lead in zip(seed_cols, leads, strict=True)
+            ],
+        )
+    )
+    add("")
+    add(
+        "Each bar cell is the bar's value for that seed, then ✓ (the score meets it) or ✗. The "
+        "form-fill bar fails CI's `stitch-eval` job when missed; the ceiling bar is reported."
+    )
+    add("")
+
+    def bar_cells(name: str) -> list[str]:
+        return [
+            f"{_f(lead['bars'][name]['bar'])} {'✓' if lead['bars'][name]['ok'] else '✗'}"
+            for lead in leads
+        ]
+
+    def status(name: str, missed: str) -> str:
+        return "pass" if all(lead["bars"][name]["ok"] for lead in leads) else missed
+
+    add(
+        _table(
+            ["Bar", *seed_cols, "Status"],
+            ["---", *("---:" for _ in seed_cols), "---"],
+            [
+                [
+                    "Score ≥ form-fill AUC + 0.05",
+                    *bar_cells("baseline"),
+                    status("baseline", "fail"),
+                ],
+                [
+                    "Score ≥ ceiling - 0.05",
+                    *bar_cells("ceiling"),
+                    status("ceiling", EXPLAINED_CEILING),
+                ],
+            ],
+        )
+    )
+    add("")
+
+    w = json.loads(WEIGHTS_FILE.read_text(encoding="utf-8"))
+    pts: dict[str, float] = w["points"]
+    grid = [g["halfLifeDays"] for g in w["fit"]["halfLifeGrid"]]
+    means = [g["meanAuc"] for g in w["fit"]["halfLifeGrid"]]
+    add("Findings about the fitted weights:")
+    add("")
+    add(
+        f"- **Weights:** half-life H = {w['halfLifeDays']} days, form-fill cap {w['formCap']}; "
+        "points " + ", ".join(f"`{k}` {v:g}" for k, v in pts.items()) + "."
+    )
+    if w["halfLifeDays"] in (min(grid), max(grid)):
+        rising = all(b > a for a, b in itertools.pairwise(means))
+        add(
+            f"- **H at the grid edge:** {w['halfLifeDays']} days is the "
+            + ("largest" if w["halfLifeDays"] == max(grid) else "smallest")
+            + f" value in the grid ({min(grid)} to {max(grid)} days)"
+            + (
+                "; the mean training AUC rose at every step, so the best half-life may lie "
+                "outside it."
+                if rising
+                else "."
+            )
+        )
+    for k in DECOY_RULES:
+        if pts[k] != 0:
+            add(
+                f"- **`{k}` is a decoy at {pts[k]:g} points:** the generator's opportunity model "
+                "ignores it, yet it fit a small positive weight."
+            )
+    zero_decoys = [k for k in DECOY_RULES if pts[k] == 0]
+    if zero_decoys:
+        add(f"- **Decoys at 0:** {', '.join(f'`{k}`' for k in zero_decoys)}.")
+    for k in TRUE_MODEL_RULES:
+        if pts[k] == 0:
+            add(
+                f"- **`{k}` at 0 points:** the generator uses it, but its coefficient fit "
+                "negative and was fixed at 0 (non-negativity rule)."
+            )
+    add("")

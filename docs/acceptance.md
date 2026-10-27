@@ -108,6 +108,79 @@ Written down on 2026-10-21, before the generator existed, from its design parame
 | Won consistency | Every `won` profile has at least one opportunity with `won = true` |
 | Coverage | `packages/attribution` 100% branch; `packages/marketing-logic` ≥ 90% line |
 
+## Lead scoring (M5)
+
+Added 2026-10-23, before any lead score existed (see the [change log](#change-log)).
+
+### Opportunity model (generator version 3)
+
+Until generator version 2, every CRM person got an opportunity with a fixed 25% chance. Title and engagement played no part, so a lead score had nothing to predict. Version 3 makes the chance depend on them through a known formula. The true coefficients below are part of the ground truth. The lead score never reads them; it has to recover the signal from the data.
+
+**Separate stream.** Opportunities come from their own random stream (`Rng(seed, OPPORTUNITY_STREAM)`), drawn after all activity exists. The draws version 2 made for opportunities on the main stream are still made and discarded. So every file except `raw/crm_opportunity.csv` is byte-identical to version 2. This was checked file by file on seeds 42, 7 and 1234, and a test pins it for seed 42.
+
+**Weekly hazard.** A CRM person's opportunity clock starts when the contact that owns their opportunities is created. That contact is their latest one: for `email_changed` people, the newer contact. Week *k* starts at `created + 7k days`, for every week that ends by `2026-06-29` (the last opening day, as in version 2). In each week, until the first opportunity opens, the chance that it opens is
+
+```
+h = 1 / (1 + exp(−z))
+z = −7.3
+    + 0.45 · seniority
+    + 0.6  · min(forms, 3)
+    + 0.35 · ln(1 + sessions)
+    + 2.5  · exp(−recency_days / 21)        (0 when the person has no activity yet)
+```
+
+All inputs are measured strictly before the week starts, from the person's **own** activity on any device (borrowed sessions included, using `eval.truth_event`):
+
+| Input | Meaning |
+|---|---|
+| `seniority` | From title: 0 for Data Analyst, Software Engineer, Office Manager, Consultant; 1 for Marketing Manager, Demand Gen Lead, Product Manager, IT Manager; 2 for Head of Growth, Operations Director, Sales Director; 3 for VP Marketing, CTO, CFO, Founder |
+| `forms` | Form fills so far |
+| `sessions` | Sessions started so far (a session starts at its first page view) |
+| `recency_days` | Days since the last session start or form fill |
+
+The opening time is uniform over the seconds of the week. Stage, amount, close date and the 15% chance of a second opportunity 1–60 days later are drawn as in version 2. Company plays no part. The intercept −7.3 was set, before any score existed, so that about 25% of CRM people get an opportunity: 0.259 / 0.246 / 0.250 on seeds 42 / 7 / 1234 (version 2: a constant 0.25).
+
+**Truth without a new table.** Each person's inputs can be rebuilt from the output files alone: CRM contacts, web events, `eval.truth_record` and `eval.truth_event`. A test rebuilds them, redraws the opportunities from the opportunity stream, and requires the same rows as `raw/crm_opportunity.csv`. Code: `services/ingest/src/opportunity.ts` (model) and `src/ceiling.ts` (rebuild, population, AUC).
+
+### Measure
+
+| Part | Definition |
+|---|---|
+| **Cutoff** | `2026-01-01T00:00:00Z`, the same for every seed |
+| **Population** | Profiles (from the stitch) holding at least one CRM contact with `updated_at` ≤ cutoff, and no opportunity on any of their contacts with `opened_at` ≤ cutoff |
+| **Label** | An opportunity on any of the profile's contacts with `opened_at` in (cutoff, cutoff + 90 days] |
+| **Score** | The lead score of the profile as of the cutoff (M5, `packages/marketing-logic`) |
+| **Metric** | Rank-based AUC (Mann–Whitney; ties count half), per seed |
+| **Ceiling** | AUC of the generator's true probability on the same population and labels. For each CRM person: P(first opportunity opens in the window \| none opened by the cutoff), computed exactly from the hazard above. For a profile: 1 − ∏(1 − that probability) over the CRM persons whose opportunity-owning contact is in the profile. The ceiling uses activity after the cutoff (the hazard does), so a score can't be expected to reach it |
+| **Baselines** | (1) Form-fill count: form submissions linked to the profile with `occurred_at` < cutoff. (2) A random score: uniform floats from `Rng(seed, 0x72616e64)`, one per profile in `profile_id` order. Both are reported. The random baseline is a sanity check and should sit near 0.5 |
+
+**Leakage guard.** The score sees only what existed before the cutoff:
+- events (web events, ad clicks, form fills) with `occurred_at` < cutoff;
+- CRM contacts with `updated_at` ≤ cutoff;
+- no opportunity data and nothing from `eval`.
+
+Pre-cutoff events reach a profile only through a pre-cutoff form fill. That means a session holding a form fill before the cutoff, or a device whose form fills before the cutoff all sit in the profile. So a link made only by later evidence can't reveal activity. A test enforces the guard. It deletes, shifts and adds rows dated after the cutoff in every input table, and requires every profile's score to stay bit-identical. Profiles themselves come from the stitch of the full dataset. This only decides which pre-cutoff records belong together, and it is the same for the score, both baselines and the ceiling.
+
+### Bars
+
+| Rule | Bar |
+|---|---|
+| **Beats the baseline** | Score AUC ≥ form-fill AUC + 0.05, **on every seed** |
+| **Near the ceiling** | Score AUC ≥ ceiling AUC − 0.05, **on every seed** |
+| Random baseline | Report only |
+
+Ceilings on the development seeds (01 `v1.1.0`, device rule (d), generator version 3), computed after the bars above were written and before any score existed:
+
+| Seed | Population | Positives | Ceiling AUC | Score bar (ceiling − 0.05) |
+|---|---:|---:|---:|---:|
+| 42 | 2,143 | 266 | 0.8097 | 0.7597 |
+| 7 | 2,188 | 302 | 0.7741 | 0.7241 |
+| 1234 | 2,202 | 303 | 0.7668 | 0.7168 |
+
+Mean true probability against the observed positive rate, as a check that the truth is rebuilt correctly: 0.1371 vs 0.1241 (42), 0.1387 vs 0.1380 (7), 0.1359 vs 0.1376 (1234).
+
+**Fitting and freezing.** Score weights and decay are fit on the development seeds only, then frozen in the `acceptance-frozen` tag together with the bars above. The held-out seeds stay unrun until then. Afterwards their ceilings are computed by the same code (`node ceiling.ts --seed N`), and they are reported against the same bars.
+
 ## Performance
 
 **Measured and recorded in `docs/results.md`; CI reports them in the job summary and never fails on them.** A miss is written down as a miss, not hidden.
@@ -127,3 +200,5 @@ Written down on 2026-10-21, before the generator existed, from its design parame
 | 2026-10-21 | Added [ground-truth and form counts](#ground-truth-and-form-counts) | M2 needs a range for every table it writes, not only the four raw tables | None (no generator existed) |
 | 2026-10-22 | Pairwise precision bar (≥ 0.98 per seed, ≥ 0.99 mean) now applies to **non-hazard pairs**: pairs where neither unit belongs to a `same_name_relative` or `shared_household_phone` person. New bar: **0** `same_name_relative` pairs merged when both DOBs are present. Same-name merges with a DOB missing become a reported known limit. All-pairs precision is still reported in `docs/results.md`, against the original bar, so the original miss stays visible. | Cause of the miss: on each dev seed, 100 `same_name_relative` pairs have a DOB missing and are indistinguishable on every identity field 01 uses, so 01 merges them. Bridge records (ADR 0001) merge most pairs with both DOBs present too; the fix is decided for 01 `v1.1.0`, which is not tagged yet (02 pins `v1.0.0`). Company and title separate these pairs only as a generator artifact, since they never vary within a person, so they are deliberately not used as identity evidence. | All-pairs pairwise precision 0.9550 / 0.9544 / 0.9561 (seeds 42 / 7 / 1234), 01 `v1.0.0` |
 | 2026-10-22 | New hazard kind `shared_device`: about 2–3% of devices are used by two people in the same household. New ground truth `eval.truth_event` (true person per event). New bar: **wrong attachment ≤ 1.0%** of attached events per seed. The event attachment bar stays ≥ 0.95. Shared devices are left out of non-hazard precision, since a shared device belongs to two people and its attachment is measured by wrong attachment. Written before the generator models shared devices. | Without shared devices every form fill on a device belongs to the device's person, so wrong attachment was 0 by construction under every device rule and couldn't tell the rules apart. | Without shared devices, event attachment (unanimous / majority / nearest): 0.9404 / 0.9672 / 1.0000 (seed 42), 0.9415 / 0.9700 / 1.0000 (seed 7), 0.9453 / 0.9660 / 1.0000 (seed 1234); wrong attachment 0 for every rule and seed |
+| 2026-10-23 | **Generator version 3** and the **M5 lead-scoring measure** ([Lead scoring](#lead-scoring-m5)). Opportunities come from their own random stream, with a weekly logistic hazard in title seniority, form fills, sessions and recency (formula and true coefficients in that section). Every other file stays byte-identical to version 2. New measure: AUC at the cutoff 2026-01-01 for an opportunity opening within the next 90 days, among profiles with a CRM contact and no opportunity yet. Ceiling: the AUC of the generator's true probabilities. Baselines: form-fill count, and a random score. Bars per seed: score AUC ≥ form-fill AUC + 0.05 and ≥ ceiling − 0.05. A leakage test is required. Weights are fit on the development seeds only and frozen in `acceptance-frozen`. Written before any score, and before the ceilings were computed. | Version 2 gave every CRM person the same 25% chance, independent of title and engagement, so an AUC bar could only reward artifacts. Those artifacts were CRM membership (form-only profiles can't convert) and opportunity timing tied to the first form fill. | No score or baseline AUC computed. Only the ceilings, computed afterwards to state the bar: 0.8097 / 0.7741 / 0.7668 (seeds 42 / 7 / 1234), also in the [Bars](#bars) table. Opportunity share of CRM people, used to set the intercept: 0.259 / 0.246 / 0.250 (seeds 42 / 7 / 1234) |
+| 2026-10-26 | **Explanatory only; no bar, rule, method, grid or weight changed.** The "near the ceiling" bar (score AUC ≥ ceiling − 0.05) stays as written. It is now **reported as a miss, not failed** in CI; the form-fill bar still fails CI. **Why the ceiling can't be reached:** the ceiling is the generator's true probability of an opportunity in the window. That probability uses the person's engagement **during the 90 days after the cutoff**, because the weekly hazard is re-evaluated at every week start with all activity up to then. A score taken at the cutoff can't see that activity. The 2026-10-23 definition already said the ceiling uses post-cutoff activity. What it means for the ceiling − 0.05 bar was **found only after the measure-cutoff numbers were seen**: within 0.05 of an oracle that sees the future was not a reachable bar for any score built on cutoff data. **New diagnostic, report only, no bar, defined after the numbers were seen:** the *cutoff-visible ceiling*. It is the generator's weekly hazard with every input frozen at its value at the cutoff (activity strictly before the cutoff, none after), as 1 − (1 − h)^13 per CRM person, combined per profile like the ceiling. Its AUC is taken on the same population and labels. Its values are in `docs/results.md`; they were not known when this entry was written. | The measure-cutoff results showed the score missing the ceiling bar on all three development seeds, while beating the form-fill bar on all three. | Score AUC 0.7238 / 0.6825 / 0.6969; form-fill AUC 0.6214 / 0.5779 / 0.6152; random AUC 0.5022 / 0.4767 / 0.5099; ceiling AUC 0.8097 / 0.7741 / 0.7668 (seeds 42 / 7 / 1234). Form-fill bar (score ≥ form-fill + 0.05): met on all three. Ceiling bar (score ≥ ceiling − 0.05 = 0.7597 / 0.7241 / 0.7168): missed by 0.036 / 0.042 / 0.020. Weights as fit: H = 90 days (grid edge), `verifiedEmail` 3 points, `recency` 0 |
