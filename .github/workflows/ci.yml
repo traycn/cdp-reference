@@ -224,7 +224,10 @@ jobs:
             (cd services/lead-score && node cli.ts run && node cli.ts run --expect-no-change)
           done
 
-  # Development seeds only. Generate, load, stitch and evaluate each seed, then
+  # All six seeds: development 42, 7, 1234 and held out 2026, 99, 31337. Held-out
+  # seeds run only because the acceptance-frozen tag exists (scripts/held-out.sh);
+  # they are scored with the frozen weights, never refit, and every table marks
+  # them "held out". Generate, load, stitch and evaluate each seed, then
   # write the results page. Fails if non-hazard precision (per seed and mean),
   # completeness, safety or event attachment miss their docs/acceptance.md bars,
   # or if the lead score misses the M5 form-fill bar (score ≥ form-fill AUC + 0.05
@@ -254,6 +257,10 @@ jobs:
       DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
     steps:
       - uses: actions/checkout@v7.0.1
+        # Full history and tags: held-out seeds run only if acceptance-frozen exists
+        # (scripts/held-out.sh).
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6.1.0
       - uses: actions/setup-node@v7.1.0
         with:
@@ -278,12 +285,13 @@ jobs:
       - name: Lead-score leakage tests
         working-directory: services/lead-score
         run: pnpm exec vitest run test/leakage.test.ts
-      - name: Generate, load, stitch and evaluate the development seeds
-        run: scripts/stitch-eval.sh 42 7 1234
+      - name: Generate, load, stitch and evaluate all six seeds
+        run: scripts/stitch-eval.sh 42 7 1234 2026 99 31337
       - name: Check the bars
         working-directory: services/stitch
         run: |
           uv run --locked cdp-stitch report --seed 42 --seed 7 --seed 1234 \
+            --seed 2026 --seed 99 --seed 31337 \
             --out "$RUNNER_TEMP/results.md" --check
       - name: Results to the job summary
         if: always()
@@ -317,6 +325,10 @@ jobs:
       DATABASE_URL: postgres://cdp:cdp_ci_only@localhost:5432/cdp?sslmode=disable
     steps:
       - uses: actions/checkout@v7.0.1
+        # Full history and tags: held-out seeds run only if acceptance-frozen exists
+        # (scripts/held-out.sh).
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6.1.0
       - uses: actions/setup-node@v7.1.0
         with:
@@ -338,12 +350,13 @@ jobs:
             -e DBMATE_SCHEMA_FILE=/tmp/schema.sql \
             -v "$GITHUB_WORKSPACE/db:/db:ro" \
             "$DBMATE_IMAGE" --wait --no-dump-schema up
-      - name: Generate, load, stitch and evaluate the development seeds
-        run: scripts/stitch-eval.sh 42 7 1234
+      - name: Generate, load, stitch and evaluate all six seeds
+        run: scripts/stitch-eval.sh 42 7 1234 2026 99 31337
       - name: Regenerate docs/results.md
         working-directory: services/stitch
         run: |
           uv run --locked cdp-stitch report --seed 42 --seed 7 --seed 1234 \
+            --seed 2026 --seed 99 --seed 31337 \
             --out ../../docs/results.md
       - name: docs/results.md matches the committed file
         run: |

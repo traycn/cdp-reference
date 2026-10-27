@@ -10,6 +10,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 [ "$#" -gt 0 ] || { echo "usage: $0 SEED..." >&2; exit 2; }
+# Held-out seeds only with the acceptance-frozen tag (scripts/held-out.sh).
+# shellcheck source=held-out.sh
+source "$root/scripts/held-out.sh"
+allow_held_out "$@"
 
 for seed in "$@"; do
   echo "== seed $seed"

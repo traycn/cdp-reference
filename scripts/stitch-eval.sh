@@ -4,8 +4,9 @@
 # .data/eval/lead-score-<seed>.json. Used by CI's stitch-eval
 # and reproduce jobs, and locally:
 #
-#   scripts/stitch-eval.sh 42 7 1234
+#   scripts/stitch-eval.sh 42 7 1234 2026 99 31337
 #   (cd services/stitch && uv run --locked cdp-stitch report --seed 42 --seed 7 --seed 1234 \
+#      --seed 2026 --seed 99 --seed 31337 \
 #      --out ../../docs/results.md --check)
 #
 # Needs the database migrated, Node 22+ with the workspace installed, and uv.
@@ -13,6 +14,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 [ "$#" -gt 0 ] || { echo "usage: $0 SEED..." >&2; exit 2; }
+# Held-out seeds only with the acceptance-frozen tag (scripts/held-out.sh).
+# shellcheck source=held-out.sh
+source "$root/scripts/held-out.sh"
+allow_held_out "$@"
 
 for seed in "$@"; do
   "$root/scripts/seed.sh" "$seed"

@@ -44,6 +44,9 @@ RULE_NAMES = {
     "session_strict": "(e) session, strict",
 }
 ADOPTED_RULE = "session_majority"
+# docs/acceptance.md, Seeds. Held-out seeds run only after the `acceptance-frozen` tag
+# (scripts/held-out.sh); every table marks them.
+HELD_OUT_SEEDS = (2026, 99, 31337)
 WEIGHTS_FILE = REPO_ROOT / "packages" / "marketing-logic" / "src" / "score-weights.json"
 CHANGE_LOG = "acceptance.md#change-log"
 EXPLAINED_CEILING = f"miss (explained, [change log 2026-10-26]({CHANGE_LOG}))"
@@ -71,6 +74,10 @@ def load_manifests(seeds: Sequence[int]) -> list[dict[str, Any]]:
         json.loads((DATA_DIR / f"seed-{s}" / "manifest.json").read_text(encoding="utf-8"))
         for s in seeds
     ]
+
+
+def seed_label(seed: int) -> str:
+    return f"{seed} (held out)" if seed in HELD_OUT_SEEDS else str(seed)
 
 
 def mean(values: Sequence[float]) -> float:
@@ -112,7 +119,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
     engine = ms[0]["engine"]
     if any(m["engine"] != engine for m in ms):
         raise RuntimeError("seeds were evaluated with different engine builds")
-    seed_cols = [str(s) for s in seeds]
+    seed_cols = [seed_label(s) for s in seeds]
     out: list[str] = []
     add = out.append
 
@@ -131,20 +138,38 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
         + ", ".join(sorted({str(mf["generator_version"]) for mf in manifests}))
         + "."
     )
-    add(
-        "- **Seeds:** development seeds "
-        + ", ".join(seed_cols)
-        + ", 10,000 people each, `--dob-rate "
+    dev = [str(s) for s in seeds if s not in HELD_OUT_SEEDS]
+    held = [str(s) for s in seeds if s in HELD_OUT_SEEDS]
+    people = (
+        ", 10,000 people each, `--dob-rate "
         + ", ".join(sorted({str(mf["dob_rate"]) for mf in manifests}))
-        + "`. Held-out seeds have not been run: the thresholds are not frozen yet "
-        "(no `acceptance-frozen` tag)."
+        + "`."
     )
+    if held:
+        add(
+            "- **Seeds:** development seeds "
+            + ", ".join(dev)
+            + "; held-out seeds "
+            + ", ".join(held)
+            + people
+            + " The held-out seeds were run after the thresholds, rules and lead-score weights "
+            'were frozen in the `acceptance-frozen` tag, and are marked "held out" in every '
+            "table."
+        )
+    else:
+        add(
+            "- **Seeds:** development seeds "
+            + ", ".join(dev)
+            + people
+            + " Held-out seeds have not been run: the thresholds are not frozen yet "
+            "(no `acceptance-frozen` tag)."
+        )
     add("")
     add(
         _table(
             ["Seed", "Generator output SHA-256"],
             ["---", "---"],
-            [[str(mf["seed"]), f"`{mf['sha256']}`"] for mf in manifests],
+            [[seed_label(mf["seed"]), f"`{mf['sha256']}`"] for mf in manifests],
         )
     )
     add("")
@@ -323,7 +348,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
             ["---", "---:", "---:", "---:", "---:", "---:", "---:"],
             [
                 [
-                    str(m["seed"]),
+                    seed_label(m["seed"]),
                     f"{m['event_attachment']['attached']:,}",
                     f"{m['event_attachment']['wrong']:,}",
                     _f(m["event_attachment"]["wrong_rate"]),
@@ -372,7 +397,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
             ["---", "---:", "---:", "---:", "---:", "---:", "---:"],
             [
                 [
-                    str(m["seed"]),
+                    seed_label(m["seed"]),
                     str(sn_both(m)["pairs"]),
                     str(m["same_name_both_dob"]["merged"]),
                     str(m["same_name_both_dob"]["pairs"]["contact"]),
@@ -400,7 +425,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
             cells = m["hard_cases"][kind]
             hard_rows.append(
                 [
-                    str(m["seed"]),
+                    seed_label(m["seed"]),
                     f"`{kind}`",
                     str(sum(cells[g]["pairs"] for g in DOB_GROUPS)),
                     *[f"{cells[g]['merged']} / {cells[g]['pairs']}" for g in DOB_GROUPS],
@@ -427,7 +452,13 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
     for m in ms:
         for r in m["email_changed_rules"]:
             ec_rows.append(
-                [str(m["seed"]), r["outcome"], r["decision"], f"`{r['rule']}`", str(r["people"])]
+                [
+                    seed_label(m["seed"]),
+                    r["outcome"],
+                    r["decision"],
+                    f"`{r['rule']}`",
+                    str(r["people"]),
+                ]
             )
     add(
         _table(
@@ -476,7 +507,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
             r = m["device_rules"][key]
             rule_rows.append(
                 [
-                    str(m["seed"]) if i == 0 else "",
+                    seed_label(m["seed"]) if i == 0 else "",
                     f"**{name}** (adopted)" if key == ADOPTED_RULE else name,
                     f"{_f(r['rate'])} {'✓' if r['rate'] >= BAR_ATTACHMENT else '✗'}",
                     f"{_f(r['wrong_rate'])} "
@@ -546,7 +577,7 @@ def render(ms: Sequence[Metrics], manifests: Sequence[dict[str, Any]]) -> str:
 
 def _lead_section(add: Callable[[str], None], seeds: Sequence[int], leads: Sequence[Any]) -> None:
     """Lead scoring (M5): AUCs, bars, and findings about the fitted weights."""
-    seed_cols = [str(s) for s in seeds]
+    seed_cols = [seed_label(s) for s in seeds]
     first = leads[0]
     add("## Lead scoring (M5)")
     add("")
@@ -555,7 +586,12 @@ def _lead_section(add: Callable[[str], None], seeds: Sequence[int], leads: Seque
         f"within the next {first['horizon_days']} days, among profiles with a CRM contact and no "
         "opportunity yet ([`acceptance.md`](acceptance.md#lead-scoring-m5)). Weights were fit on "
         "the development seeds at earlier cutoffs (`packages/marketing-logic/src/"
-        "score-weights.json`)."
+        "score-weights.json`)"
+        + (
+            "; held-out seeds are scored with the frozen weights and never refit."
+            if any(s in HELD_OUT_SEEDS for s in seeds)
+            else "."
+        )
     )
     add("")
     add(
